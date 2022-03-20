@@ -108,7 +108,7 @@ impl EmployeeDAO {
         }
     }
 
-    async fn upsert(
+    async fn update(
         &self,
         id: &i64,
         name: &String,
@@ -332,7 +332,7 @@ async fn put_employee(
     body: EmployeeBody,
 ) -> Result<impl Reply, Rejection> {
     match dao
-        .upsert(&id, &body.name, &EmployeeRole::from(&body.role))
+        .update(&id, &body.name, &EmployeeRole::from(&body.role))
         .await
     {
         Ok(employee) => Ok(ok_with_json(&employee)),

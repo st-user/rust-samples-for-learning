@@ -28,7 +28,7 @@ async fn main() {
         let mut db = db.lock().unwrap();
         db.insert(0, Employee {
             id: 0,
-            name: String::from("Jhon"),
+            name: String::from("John"),
             role: Role::Admin,
         });
         db.insert(1, Employee {

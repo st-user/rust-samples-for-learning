@@ -16,7 +16,7 @@ fn parse_frame(data: Vec<u8>) -> Frame {
     if Frame::match_first_char(&message, '@') {
         let room = message.to_string();
         let room = room.trim();
-        Frame::Join(room.to_owned())
+        Frame::Enter(room.to_owned())
     } else {
         Frame::Message(message.to_owned())
     }

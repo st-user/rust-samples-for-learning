@@ -3,7 +3,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 pub enum Frame {
-    Join(String),
+    Enter(String),
     Message(String),
     IllegalFormat(String),
 }
@@ -26,7 +26,7 @@ impl Client {
     fn send(&self, message: String) -> Result<(), String> {
         self.sender
             .send(message)
-            .map_err(|e| format!("Encoutered an error while sending the message {:?}", e))
+            .map_err(|e| format!("Encountered an error while sending the message {:?}", e))
     }
 }
 
@@ -53,7 +53,7 @@ impl ChatRooms {
                 self.destroy_client(&id);
                 Result::Err(error_msg)
             }
-            Frame::Join(room) => {
+            Frame::Enter(room) => {
                 if let Some(client) = self.clients.get_mut(&id) {
                     let members = self.members.entry(room.to_owned()).or_insert(Vec::new());
                     members.push(id.clone());
@@ -64,7 +64,7 @@ impl ChatRooms {
                         }
                     }
                     let ret = client.send(format!(
-                        "Join the room {} from {}\r\n",
+                        "Enter the room {} from {}\r\n",
                         room,
                         room_before.unwrap_or(&String::from(""))
                     ));
@@ -98,7 +98,7 @@ impl ChatRooms {
                         }
                         Result::Ok(())
                     } else {
-                        client.send(String::from("A room should be specified at first.\r\n"))
+                        client.send(String::from("A room should be specified first.\r\n"))
                     }
                 } else {
                     self.destroy_client(&id);

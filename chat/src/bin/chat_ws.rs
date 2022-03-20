@@ -15,7 +15,7 @@ fn parse_frame(raw_message: Message) -> Frame {
         Ok(msg) => msg,
         Err(e) => {
             return Frame::IllegalFormat(format!(
-                "Illegal message fromat {:?} (or the connection has been closed)",
+                "Illegal message format {:?} (or the connection has been closed)",
                 e
             ))
         }
@@ -23,7 +23,7 @@ fn parse_frame(raw_message: Message) -> Frame {
     if Frame::match_first_char(&message, '@') {
         let room = message.to_string();
         let room = room.trim();
-        Frame::Join(room.to_owned())
+        Frame::Enter(room.to_owned())
     } else {
         Frame::Message(message.to_owned())
     }
