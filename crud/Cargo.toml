@@ -1,0 +1,17 @@
+[package]
+name = "crud"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.17.*", features=["full"]}
+warp = { version = "0.3.*" }
+serde = { version = "1.0.*", features = ["derive"]}
+
+# for postgres
+mobc = { version = "0.7.*" }
+tokio-postgres = { version = "0.7.*" }
+mobc-postgres = { version = "0.7.*" }
+postgres-types = { version = "0.2.*", features = ["derive"] }
