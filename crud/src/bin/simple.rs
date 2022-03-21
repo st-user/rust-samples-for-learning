@@ -1,13 +1,12 @@
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
-use warp::{Filter, Rejection, Reply, http::StatusCode};
+use std::sync::{Arc, Mutex};
+use warp::{http::StatusCode, Filter, Rejection, Reply};
 
-use crud::data::{Employee, Role, EmployeeBody, ErrorMessage};
-
+use crud::data::{Employee, EmployeeBody, ErrorMessage, Role};
 
 struct IdGenerator {
-    id: i64
+    id: i64,
 }
 
 impl IdGenerator {
@@ -20,33 +19,40 @@ impl IdGenerator {
 type DB = Arc<Mutex<HashMap<i64, Employee>>>;
 type IdCounter = Arc<Mutex<IdGenerator>>;
 
-
 #[tokio::main]
 async fn main() {
-
     let db: DB = Arc::new(Mutex::new(HashMap::new()));
     {
         let mut db = db.lock().unwrap();
-        db.insert(0, Employee {
-            id: 0,
-            name: String::from("John"),
-            role: Role::Admin,
-        });
-        db.insert(1, Employee {
-            id: 1,
-            name: String::from("Bob"),
-            role: Role::Agent,
-        });
-        db.insert(2, Employee {
-            id: 2,
-            name: String::from("Alice"),
-            role: Role::SuperAdmin,
-        });
+        db.insert(
+            0,
+            Employee {
+                id: 0,
+                name: String::from("John"),
+                role: Role::Admin,
+            },
+        );
+        db.insert(
+            1,
+            Employee {
+                id: 1,
+                name: String::from("Bob"),
+                role: Role::Agent,
+            },
+        );
+        db.insert(
+            2,
+            Employee {
+                id: 2,
+                name: String::from("Alice"),
+                role: Role::SuperAdmin,
+            },
+        );
     }
-    let id_counter = Arc::new(Mutex::new(IdGenerator{ id: 2 }));
+    let id_counter = Arc::new(Mutex::new(IdGenerator { id: 2 }));
 
     let context = warp::path("employees");
-    
+
     let get_route = context
         .and(warp::get())
         .and(with_db(db.clone()))
@@ -57,7 +63,7 @@ async fn main() {
         .and(warp::get())
         .and(with_db(db.clone()))
         .and_then(get_all_employees);
-    
+
     let post_route = context
         .and(warp::post())
         .and(with_db(db.clone()))
@@ -79,22 +85,22 @@ async fn main() {
         .and_then(delete_employee);
 
     let route = get_route
-                    .or(get_all_route)
-                    .or(post_route)
-                    .or(put_route)
-                    .or(delete_route)
-                    .recover(handle_rejection);
+        .or(get_all_route)
+        .or(post_route)
+        .or(put_route)
+        .or(delete_route)
+        .recover(handle_rejection);
 
-    warp::serve(route)
-        .run(([127, 0, 0, 1], 8080))
-        .await;
+    warp::serve(route).run(([127, 0, 0, 1], 8080)).await;
 }
 
 fn with_db(db: DB) -> impl Filter<Extract = (DB,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || db.clone())
 }
 
-fn with_id_counter(id_counter: IdCounter) -> impl Filter<Extract = (IdCounter,), Error = std::convert::Infallible> + Clone {
+fn with_id_counter(
+    id_counter: IdCounter,
+) -> impl Filter<Extract = (IdCounter,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || id_counter.clone())
 }
 
@@ -102,7 +108,7 @@ async fn get_employee(db: DB, id: i64) -> Result<impl Reply, Rejection> {
     let data = db.lock().unwrap();
     match data.get(&id) {
         Some(employee) => Ok(ok_with_json(&employee)),
-        None => Ok(not_found_json())
+        None => Ok(not_found_json()),
     }
 }
 
@@ -115,14 +121,18 @@ async fn get_all_employees(db: DB) -> Result<impl Reply, Rejection> {
     Ok(ok_with_json(&employees))
 }
 
-async fn post_employee(db: DB, id_counter: IdCounter, body: EmployeeBody) -> Result<impl Reply, Rejection> {
+async fn post_employee(
+    db: DB,
+    id_counter: IdCounter,
+    body: EmployeeBody,
+) -> Result<impl Reply, Rejection> {
     let mut db = db.lock().unwrap();
     let mut id_counter = id_counter.lock().unwrap();
     let new_id = id_counter.gen();
     let employee = Employee {
         id: new_id,
         name: body.name,
-        role: body.role
+        role: body.role,
     };
     let ret = Employee::from(&employee);
     db.insert(new_id, employee);
@@ -134,13 +144,13 @@ async fn put_employee(db: DB, id: i64, body: EmployeeBody) -> Result<impl Reply,
     let mut db = db.lock().unwrap();
 
     if let None = db.get(&id) {
-        return Ok(not_found_json())
+        return Ok(not_found_json());
     }
 
     let employee = Employee {
         id: id,
         name: body.name,
-        role: body.role
+        role: body.role,
     };
     let ret = Employee::from(&employee);
     db.insert(id, employee);
@@ -160,9 +170,11 @@ async fn delete_employee(db: DB, id: i64) -> Result<impl Reply, Rejection> {
 
 async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::Infallible> {
     println!("handle_rejection {:?}", err);
-    Ok(warp::reply::with_status("Internal Server Error", StatusCode::INTERNAL_SERVER_ERROR))
+    Ok(warp::reply::with_status(
+        "Internal Server Error",
+        StatusCode::INTERNAL_SERVER_ERROR,
+    ))
 }
-
 
 fn ok_with_json<T>(employee: &T) -> warp::reply::WithStatus<warp::reply::Json>
 where

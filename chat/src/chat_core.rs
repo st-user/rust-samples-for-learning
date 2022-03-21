@@ -31,19 +31,19 @@ impl Client {
 }
 
 /// Represents **room**s for chat.
-/// 
+///
 /// Clients can communicate with each other within a room they are belonging to.
 /// Typically, a **client** is a peer of a network connection such as TCP and Websocket.
-/// 
+///
 /// This struct provides the functionality of managing relationships between rooms and clients
-/// 
+///
 pub struct ChatRooms {
     clients: HashMap<Uuid, Client>,
     rooms: HashMap<Uuid, String>,
     members: HashMap<String, Vec<Uuid>>,
 }
 
-impl ChatRooms {    
+impl ChatRooms {
     pub fn new() -> ChatRooms {
         ChatRooms {
             clients: HashMap::new(),

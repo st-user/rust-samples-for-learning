@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct Employee {
     pub id: i64,
     pub name: String,
-    pub role: Role
+    pub role: Role,
 }
 
 impl Employee {
@@ -12,7 +12,7 @@ impl Employee {
         Employee {
             id: another.id.clone(),
             name: another.name.clone(),
-            role: another.role.clone()
+            role: another.role.clone(),
         }
     }
 }
@@ -21,7 +21,7 @@ impl Employee {
 pub enum Role {
     SuperAdmin,
     Admin,
-    Agent
+    Agent,
 }
 
 impl Clone for Role {
@@ -37,7 +37,7 @@ impl Clone for Role {
 #[derive(Deserialize, Debug)]
 pub struct EmployeeBody {
     pub name: String,
-    pub role: Role
+    pub role: Role,
 }
 
 #[derive(Serialize)]
@@ -45,4 +45,3 @@ pub struct ErrorMessage {
     pub code: u16,
     pub message: String,
 }
-
