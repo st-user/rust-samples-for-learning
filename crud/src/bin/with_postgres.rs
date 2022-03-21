@@ -16,7 +16,6 @@ enum EmployeeRole {
     Admin,
     Agent,
 }
-
 impl EmployeeRole {
     fn from(role: &Role) -> EmployeeRole {
         match role {
@@ -25,7 +24,7 @@ impl EmployeeRole {
             Role::Agent => EmployeeRole::Agent,
         }
     }
-
+    
     fn to_role(&self) -> Role {
         match self {
             EmployeeRole::SuperAdmin => Role::SuperAdmin,
@@ -37,11 +36,18 @@ impl EmployeeRole {
 
 type DBPool = mobc::Pool<mobc_postgres::PgConnectionManager<tokio_postgres::NoTls>>;
 
+/// The Data Access Object(DAO) for Employee.
+/// 
 struct EmployeeDAO {
     db_pool: DBPool,
 }
 
 impl EmployeeDAO {
+
+    /// Get all Employees.
+    /// 
+    /// This function is intended to be used for the `GET /employees` endpoint.
+    /// 
     async fn find_all(&self) -> Result<Vec<Employee>, String> {
         let client = self.db_pool.get().await.map_err(|e| format!("{:?}", e))?;
         let sql = "
@@ -59,6 +65,10 @@ impl EmployeeDAO {
         Ok(result.iter().map(row_to_employee).collect())
     }
 
+    /// Get an Employee mapped to the given id.
+    /// 
+    /// This function is intended to be used for the `GET /employees/${id}` endpoint.
+    /// 
     async fn find_by_id(&self, id: &i64) -> Result<Option<Employee>, String> {
         let client = self.db_pool.get().await.map_err(|e| format!("{:?}", e))?;
         let sql = "
@@ -78,6 +88,11 @@ impl EmployeeDAO {
         Ok(result.get(0).map(row_to_employee))
     }
 
+    /// Create an Employee with the given name and role.
+    /// 
+    /// The id field is generated automatically.
+    /// This function is intended to be used for the `POST /employees` endpoint.
+    /// 
     async fn insert(&self, name: &String, role: &EmployeeRole) -> Result<Employee, String> {
         let client = self.db_pool.get().await.map_err(|e| format!("{:?}", e))?;
 
@@ -108,6 +123,10 @@ impl EmployeeDAO {
         }
     }
 
+    /// Update an Employee mapped to the given id with the given name and role.
+    /// 
+    /// This function is intended to be used for the `PUT /employees/${id}` endpoint.
+    /// 
     async fn update(
         &self,
         id: &i64,
@@ -177,6 +196,10 @@ impl EmployeeDAO {
         }
     }
 
+    /// Delete an Employee mapped to the given id.
+    /// 
+    /// This function is intended to be used for the `DELETE /employees/${id}` endpoint.
+    /// 
     async fn delete_by_id(&self, id: &i64) -> Result<Option<Employee>, String> {
         let client = self.db_pool.get().await.map_err(|e| format!("{:?}", e))?;
 

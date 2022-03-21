@@ -1,11 +1,11 @@
 # crud
 
-Simple web applications demonstrates CRUD(Create, Read, Update, Delete) operations.
+Simple web applications demonstrate CRUD(Create, Read, Update, Delete) operations.
 
-## Simple
+## Simple app
 
-`src/bin/simple.rs` doesn't require external resources(e.g. relational Database). 
-This application uses in-memory `HashMap` as the storage.
+`src/bin/simple.rs` doesn't require external resources(e.g. relational database). 
+This application uses in-memory `HashMap` as a storage.
 
 ### Run
 
@@ -13,9 +13,9 @@ This application uses in-memory `HashMap` as the storage.
 cargo run --bin simple
 ```
 
-## Postgres
+## Postgres app
 
-`src/bin/with_postgres.rs` requires postgres. This app accesses postgres with [tokio-postgres](https://crates.io/crates/tokio-postgres).
+`src/bin/with_postgres.rs` accesses postgres with [tokio-postgres](https://crates.io/crates/tokio-postgres).
 
 ### Run
 

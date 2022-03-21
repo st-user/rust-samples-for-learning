@@ -89,7 +89,6 @@ async fn main() {
         .await;
 }
 
-// https://github.com/zupzup/warp-postgres-example/blob/main/src/main.rs
 fn with_db(db: DB) -> impl Filter<Extract = (DB,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || db.clone())
 }
@@ -97,7 +96,7 @@ fn with_db(db: DB) -> impl Filter<Extract = (DB,), Error = std::convert::Infalli
 fn with_id_counter(id_counter: IdCounter) -> impl Filter<Extract = (IdCounter,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || id_counter.clone())
 }
-// https://github.com/seanmonstar/warp/blob/master/examples/rejections.rs
+
 async fn get_employee(db: DB, id: i64) -> Result<impl Reply, Rejection> {
     let data = db.lock().unwrap();
     match data.get(&id) {
@@ -118,7 +117,6 @@ async fn get_all_employees(db: DB) -> Result<impl Reply, Rejection> {
     Ok(warp::reply::json(&employees))
 }
 
-// https://spring.io/guides/tutorials/rest/
 async fn post_employee(db: DB, id_counter: IdCounter, body: EmployeeBody) -> Result<impl Reply, Rejection> {
     let mut db = db.lock().unwrap();
     let mut id_counter = id_counter.lock().unwrap();
