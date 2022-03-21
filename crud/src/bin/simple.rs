@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use warp::{Filter, Rejection, Reply, http::StatusCode};
@@ -100,11 +101,8 @@ fn with_id_counter(id_counter: IdCounter) -> impl Filter<Extract = (IdCounter,),
 async fn get_employee(db: DB, id: i64) -> Result<impl Reply, Rejection> {
     let data = db.lock().unwrap();
     match data.get(&id) {
-        Some(employee) => Ok(warp::reply::with_status(warp::reply::json(&employee), StatusCode::OK)),
-        None => Ok(warp::reply::with_status(warp::reply::json(&ErrorMessage{
-            code: 404,
-            message: String::from("Not Found")
-        }), StatusCode::NOT_FOUND))
+        Some(employee) => Ok(ok_with_json(&employee)),
+        None => Ok(not_found_json())
     }
 }
 
@@ -114,7 +112,7 @@ async fn get_all_employees(db: DB) -> Result<impl Reply, Rejection> {
     for (_, employee) in data.iter() {
         employees.push(Employee::from(employee));
     }
-    Ok(warp::reply::json(&employees))
+    Ok(ok_with_json(&employees))
 }
 
 async fn post_employee(db: DB, id_counter: IdCounter, body: EmployeeBody) -> Result<impl Reply, Rejection> {
@@ -129,11 +127,16 @@ async fn post_employee(db: DB, id_counter: IdCounter, body: EmployeeBody) -> Res
     let ret = Employee::from(&employee);
     db.insert(new_id, employee);
 
-    Ok(warp::reply::json(&ret))
+    Ok(ok_with_json(&ret))
 }
 
 async fn put_employee(db: DB, id: i64, body: EmployeeBody) -> Result<impl Reply, Rejection> {
     let mut db = db.lock().unwrap();
+
+    if let None = db.get(&id) {
+        return Ok(not_found_json())
+    }
+
     let employee = Employee {
         id: id,
         name: body.name,
@@ -142,13 +145,17 @@ async fn put_employee(db: DB, id: i64, body: EmployeeBody) -> Result<impl Reply,
     let ret = Employee::from(&employee);
     db.insert(id, employee);
 
-    Ok(warp::reply::json(&ret))
+    Ok(ok_with_json(&ret))
 }
 
 async fn delete_employee(db: DB, id: i64) -> Result<impl Reply, Rejection> {
     let mut db = db.lock().unwrap();
-    db.remove(&id);
-    Ok("")
+
+    if let Some(employee) = db.remove(&id) {
+        Ok(ok_with_json(&employee))
+    } else {
+        Ok(not_found_json())
+    }
 }
 
 async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::Infallible> {
@@ -156,3 +163,20 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::In
     Ok(warp::reply::with_status("Internal Server Error", StatusCode::INTERNAL_SERVER_ERROR))
 }
 
+
+fn ok_with_json<T>(employee: &T) -> warp::reply::WithStatus<warp::reply::Json>
+where
+    T: Serialize,
+{
+    warp::reply::with_status(warp::reply::json(employee), StatusCode::OK)
+}
+
+fn not_found_json() -> warp::reply::WithStatus<warp::reply::Json> {
+    warp::reply::with_status(
+        warp::reply::json(&ErrorMessage {
+            code: 404,
+            message: String::from("Not Found"),
+        }),
+        StatusCode::NOT_FOUND,
+    )
+}
