@@ -30,13 +30,20 @@ impl Client {
     }
 }
 
+/// Represents **room**s for chat.
+/// 
+/// Clients can communicate with each other within a room they are belonging to.
+/// Typically, a **client** is a peer of a network connection such as TCP and Websocket.
+/// 
+/// This struct provides the functionality of managing relationships between rooms and clients
+/// 
 pub struct ChatRooms {
     clients: HashMap<Uuid, Client>,
     rooms: HashMap<Uuid, String>,
     members: HashMap<String, Vec<Uuid>>,
 }
 
-impl ChatRooms {
+impl ChatRooms {    
     pub fn new() -> ChatRooms {
         ChatRooms {
             clients: HashMap::new(),
@@ -84,12 +91,12 @@ impl ChatRooms {
                         if let Some(members) = self.members.get(current_room) {
                             for member in members {
                                 if member == id {
-                                    continue
+                                    continue;
                                 }
+
                                 if let Some(client) = self.clients.get(member) {
-                                    match client.send(message.to_owned()) {
-                                        Ok(()) => {}
-                                        Err(e) => println!("{}", e),
+                                    if let Err(e) = client.send(message.to_owned()) {
+                                        println!("{}", e);
                                     }
                                 } else {
                                     println!("The member doesn't exist {:?}", member)
@@ -123,7 +130,7 @@ impl ChatRooms {
         for m in members.iter() {
             if m == uuid {
                 members.remove(index);
-                return
+                return;
             }
             index += 1;
         }
