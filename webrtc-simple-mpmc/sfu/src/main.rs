@@ -29,6 +29,10 @@ use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndicat
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::Error;
 
+use log::{info, error};
+
+mod logger;
+
 // Both audio and video
 // https://github.com/webrtc-rs/examples/blob/5a0e2861c66a45fca93aadf9e70a5b045b26dc9e/examples/save-to-disk-h264/save-to-disk-h264.rs
 //
@@ -160,10 +164,10 @@ impl PublisherManager {
     fn send(&self, pc_id: &Uuid, message: MessageToPublisher) {
         if let Some(sender) = self.senders.get(pc_id) {
             if let Err(e) = sender.send(message) {
-                println_err(format!(
+                error!(
                     "Error while sending a message to {:?} {:?}",
                     pc_id, e
-                ));
+                );
             }
         }
     }
@@ -192,16 +196,16 @@ impl SubscriberManager {
 
     fn send(&self, message: SubscriberMessage) {
         for (sub_id, tx_ch) in self.senders.iter() {
-            println!("Require renegotiation to subscriber {:?}", sub_id);
+            info!("Require renegotiation to subscriber {:?}", sub_id);
 
             if let Err(e) = tx_ch.send(SubscriberMessage {
                 msg_type: message.msg_type,
                 message: message.message.clone(),
             }) {
-                println_err(format!(
+                error!(
                     "Error while sending a message to {:?} {:?}",
                     sub_id, e
-                ));
+                );
             }
         }
     }
@@ -212,6 +216,8 @@ type SubscriberManagerRef = Arc<Mutex<SubscriberManager>>;
 
 #[tokio::main]
 async fn main() {
+    logger::init_logger();
+
     let context = warp::path("app");
     let ws_context = warp::path("ws-app");
     let publisher_manager = Arc::new(Mutex::new(PublisherManager::new()));
@@ -264,7 +270,7 @@ async fn handle_offer(
     handle_offer_delegate(offer, publisher_manager, subscriber_manager)
         .await
         .map_err(|e| {
-            println_err(format!("Error on handle_offer {:?}.", e));
+            error!("Error on handle_offer {:?}.", e);
             reject::custom(e)
         })
 }
@@ -307,14 +313,14 @@ async fn handle_offer_delegate(
         .on_track(Box::new(
             move |track: Option<Arc<TrackRemote>>, _receiver: Option<Arc<RTCRtpReceiver>>| {
                 if let Some(track) = track {
-                    println!("on_track {:?} on {:?}.", track.kind(), pc_id);
+                    info!("on_track {:?} on {:?}.", track.kind(), pc_id);
 
                     if track.kind() == RTPCodecType::Video {
                         let media_ssrc = track.ssrc();
                         let track_ssrc_tx = Arc::clone(&track_ssrc_tx);
                         tokio::spawn(async move {
                             if let Err(e) = track_ssrc_tx.send(media_ssrc).await {
-                                println_err(format!("{:?} on {:?}.", e, pc_id));
+                                error!("{:?} on {:?}.", e, pc_id);
                             }
                         });
                     }
@@ -332,16 +338,16 @@ async fn handle_offer_delegate(
                         while let Ok((rtp, _)) = track.read_rtp().await {
                             if let Err(e) = local_track.write_rtp(&rtp).await {
                                 if Error::ErrClosedPipe != e {
-                                    println_err(format!(
+                                    error!(
                                         "output track write_rtp got error: {} and break on {:?}.",
                                         e, pc_id
-                                    ));
+                                    );
                                     break;
                                 } else {
-                                    println_err(format!(
+                                    error!(
                                         "output track write_rtp got error: {} on {:?}.",
                                         e, pc_id
-                                    ));
+                                    );
                                 }
                             }
                         }
@@ -357,7 +363,7 @@ async fn handle_offer_delegate(
     let subscriber_manager_for_state_change = subscriber_manager.clone();
     peer_connection
         .on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            println!("Peer connection state has changed to {} on {:?}.", s, pc_id);
+            info!("Peer connection state has changed to {} on {:?}.", s, pc_id);
 
             if s == RTCPeerConnectionState::Disconnected {
                 {
@@ -398,7 +404,7 @@ async fn handle_offer_delegate(
                         msg_type: SubscriberMessageType::Start,
                         message: String::from(""),
                     });
-                    println!("Both audio and video track are added to {:?}.", pc_id);
+                    info!("Both audio and video track are added to {:?}.", pc_id);
                     break;
                 }
             }
@@ -408,7 +414,7 @@ async fn handle_offer_delegate(
 
     tokio::spawn(async move {
         if let Some(ssrc) = track_ssrc_rx.recv().await {
-            println!("SSRC {:?} detected on {:?}.", ssrc, pc_id);
+            info!("SSRC {:?} detected on {:?}.", ssrc, pc_id);
 
             while let Some(msg) = rx_ch.next().await {
                 match msg {
@@ -421,7 +427,7 @@ async fn handle_offer_delegate(
                                 })])
                                 .await
                             {
-                                println_err(format!("{:?} on {:?}.", e, pc_id));
+                                error!("{:?} on {:?}.", e, pc_id);
                             }
                         }
                     },
@@ -432,7 +438,7 @@ async fn handle_offer_delegate(
     if let Some(local_description) = peer_connection.local_description().await {
         Ok(ok_with_json(&local_description))
     } else {
-        println_err(format!("generate local description failed on {:?}.", pc_id));
+        error!("generate local description failed on {:?}.", pc_id);
         Ok(internal_server_error_json())
     }
 }
@@ -443,7 +449,7 @@ async fn handle_subscribe(
     subscriber_manager: SubscriberManagerRef,
 ) {
     if let Err(e) = handle_subscribe_delegate(ws, publisher_manager, subscriber_manager).await {
-        println_err(format!("Error on handle_subscribe {:?}.", e));
+        error!("Error on handle_subscribe {:?}.", e);
     }
 }
 
@@ -469,7 +475,7 @@ async fn handle_subscribe_delegate(
     let subscriber_manager_for_state_change = subscriber_manager.clone();
     peer_connection
         .on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            println!(
+            info!(
                 "Peer Connection State has changed to {} on {:?}.",
                 s, subscriber_id
             );
@@ -486,22 +492,22 @@ async fn handle_subscribe_delegate(
         while let Some(msg) = rx_ch.next().await {
             match msg.msg_type {
                 SubscriberMessageType::Answer => {
-                    println!("Receive answer on {:?}.", subscriber_id);
+                    info!("Receive answer on {:?}.", subscriber_id);
 
                     let answer = match serde_json::from_str::<RTCSessionDescription>(&msg.message) {
                         Ok(a) => a,
                         Err(e) => {
-                            println_err(format!("{:?} on {:?}", e, subscriber_id));
+                            error!("{:?} on {:?}", e, subscriber_id);
                             continue;
                         }
                     };
                     if let Err(e) = peer_connection.set_remote_description(answer).await {
-                        println_err(format!("{:?} on {:?}", e, subscriber_id));
+                        error!("{:?} on {:?}", e, subscriber_id);
                         continue;
                     }
                 }
                 SubscriberMessageType::Start => {
-                    println!("Create offer on {:?}.", subscriber_id);
+                    info!("Create offer on {:?}.", subscriber_id);
 
                     let local_track_ids;
                     let local_tracks;
@@ -519,18 +525,18 @@ async fn handle_subscribe_delegate(
                         if let Some(t) = sender.track().await {
                             let track_id = t.id().to_owned();
                             if !local_track_ids.contains(&track_id) {
-                                println!("Remove track {:?} from {:?}", track_id, subscriber_id);
+                                info!("Remove track {:?} from {:?}", track_id, subscriber_id);
                                 if let Err(e) = peer_connection.remove_track(&sender).await {
-                                    println_err(format!(
+                                    error!(
                                         "Error while removing track {:?} {:?}.",
                                         track_id, e
-                                    ));
+                                    );
                                 }
                             }
                             existing_track_ids.insert(track_id);
                         }
                     }
-                    println!(
+                    info!(
                         "The number of publisher's tracks is {}. Existing track track_ids {:?} on {:?}.",
                         local_tracks.len(),
                         existing_track_ids,
@@ -538,20 +544,20 @@ async fn handle_subscribe_delegate(
                     );
 
                     if local_tracks.len() == 0 {
-                        println!("No publisher for {:?}", subscriber_id);
+                        info!("No publisher for {:?}", subscriber_id);
                         continue;
                     }
 
                     for (publisher_pc_id, local_track) in local_tracks {
                         let track_id = local_track.id();
                         if existing_track_ids.contains(track_id) {
-                            println!(
+                            info!(
                                 "Track already exists {:?} on {:?}.",
                                 track_id, subscriber_id
                             );
                             continue;
                         }
-                        println!("Add track {:?} to {:?}.", track_id, subscriber_id);
+                        info!("Add track {:?} to {:?}.", track_id, subscriber_id);
 
                         if let Ok(rtp_sender) = peer_connection
                             .add_track(local_track as Arc<dyn TrackLocal + Send + Sync>)
@@ -569,7 +575,7 @@ async fn handle_subscribe_delegate(
                                                 .as_any()
                                                 .downcast_ref::<PictureLossIndication>(
                                             ) {
-                                                println!("{:?} on {:?}", pli_packet, subscriber_id);
+                                                info!("{:?} on {:?}", pli_packet, subscriber_id);
                                                 let publisher_manager =
                                                     publisher_manager_for_rtcp.lock().unwrap();
                                                 publisher_manager.send(
@@ -587,7 +593,7 @@ async fn handle_subscribe_delegate(
                     let offer = match peer_connection.create_offer(None).await {
                         Ok(offer) => offer,
                         Err(e) => {
-                            println_err(format!("{:?} on {:?}.", e, subscriber_id));
+                            error!("{:?} on {:?}.", e, subscriber_id);
                             continue;
                         }
                     };
@@ -595,7 +601,7 @@ async fn handle_subscribe_delegate(
                     let mut gather_complete = peer_connection.gathering_complete_promise().await;
 
                     if let Err(e) = peer_connection.set_local_description(offer).await {
-                        println_err(format!("{:?} on {:?}.", e, subscriber_id));
+                        error!("{:?} on {:?}.", e, subscriber_id);
                         continue;
                     }
                     let _ = gather_complete.recv().await;
@@ -603,7 +609,7 @@ async fn handle_subscribe_delegate(
                         let sdp_str = match serde_json::to_string(&local_description) {
                             Ok(s) => s,
                             Err(e) => {
-                                println_err(format!("{:?} on {:?}.", e, subscriber_id));
+                                error!("{:?} on {:?}.", e, subscriber_id);
                                 continue;
                             }
                         };
@@ -613,26 +619,26 @@ async fn handle_subscribe_delegate(
                         }) {
                             Ok(s) => s,
                             Err(e) => {
-                                println_err(format!("{:?} on {:?}.", e, subscriber_id));
+                                error!("{:?} on {:?}.", e, subscriber_id);
                                 continue;
                             }
                         };
 
                         if let Err(e) = tx_ws.send(Message::text(ret_message)).await {
-                            println_err(format!("{:?} on {:?}.", e, subscriber_id));
+                            error!("{:?} on {:?}.", e, subscriber_id);
                         }
                     } else {
-                        println_err(format!(
+                        error!(
                             "generate local_description failed on {:?}.",
                             subscriber_id
-                        ));
+                        );
                     }
                 }
                 SubscriberMessageType::Offer => {
-                    println_err(format!(
+                    error!(
                         "Receiving offers is currently not supported ({:?}).",
                         subscriber_id
-                    ));
+                    );
                     continue;
                 }
             }
@@ -647,10 +653,10 @@ async fn handle_subscribe_delegate(
         }) {
             Ok(msg) => {
                 if let Err(e) = tx_ch.send(msg) {
-                    println_err(format!("{:?} on {:?}.", e, subscriber_id))
+                    error!("{:?} on {:?}.", e, subscriber_id)
                 }
             }
-            Err(e) => println_err(format!("{:?} on {:?}.", e, subscriber_id)),
+            Err(e) => error!("{:?} on {:?}.", e, subscriber_id),
         }
     }
 
@@ -686,7 +692,7 @@ where
 }
 
 async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::Infallible> {
-    println_err(format!("handle_rejection {:?}", err));
+    error!("handle_rejection {:?}", err);
     Ok(warp::reply::with_status(
         "Internal Server Error",
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -701,8 +707,4 @@ fn internal_server_error_json() -> warp::reply::WithStatus<warp::reply::Json> {
         }),
         StatusCode::INTERNAL_SERVER_ERROR,
     )
-}
-
-fn println_err(e: String) {
-    eprintln!("\x1b[91m{}\x1b[0m", e);
 }
