@@ -29,26 +29,13 @@ use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndicat
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::Error;
 
-use log::{info, error};
+use log::{error, info};
 
 mod logger;
 
 // Both audio and video
 // https://github.com/webrtc-rs/examples/blob/5a0e2861c66a45fca93aadf9e70a5b045b26dc9e/examples/save-to-disk-h264/save-to-disk-h264.rs
 //
-
-#[derive(Debug)]
-struct WebRTCRuntimeError {
-    _cause: webrtc::Error,
-}
-
-impl reject::Reject for WebRTCRuntimeError {}
-
-impl From<webrtc::Error> for WebRTCRuntimeError {
-    fn from(item: webrtc::Error) -> Self {
-        WebRTCRuntimeError { _cause: item }
-    }
-}
 
 #[derive(Deserialize, Serialize, Debug)]
 struct OfferBody {
@@ -79,30 +66,48 @@ struct SubscriberMessage {
     message: String,
 }
 
+type WsSendError = tokio::sync::mpsc::error::SendError<warp::ws::Message>;
+
 #[derive(Debug)]
-enum MessagingError {
+enum ApplicationError {
     Any(()),
     Json(serde_json::Error),
     Web(warp::Error),
+    WebRTC(webrtc::Error),
+    WsSend(WsSendError),
 }
 
-impl From<()> for MessagingError {
+impl From<()> for ApplicationError {
     fn from(item: ()) -> Self {
-        MessagingError::Any(item)
+        ApplicationError::Any(item)
     }
 }
 
-impl From<serde_json::Error> for MessagingError {
+impl From<serde_json::Error> for ApplicationError {
     fn from(item: serde_json::Error) -> Self {
-        MessagingError::Json(item)
+        ApplicationError::Json(item)
     }
 }
 
-impl From<warp::Error> for MessagingError {
+impl From<warp::Error> for ApplicationError {
     fn from(item: warp::Error) -> Self {
-        MessagingError::Web(item)
+        ApplicationError::Web(item)
     }
 }
+
+impl From<webrtc::Error> for ApplicationError {
+    fn from(item: webrtc::Error) -> Self {
+        ApplicationError::WebRTC(item)
+    }
+}
+
+impl From<WsSendError> for ApplicationError {
+    fn from(item: WsSendError) -> Self {
+        ApplicationError::WsSend(item)
+    }
+}
+
+impl reject::Reject for ApplicationError {}
 
 #[derive(Serialize)]
 struct ErrorMessage {
@@ -164,10 +169,7 @@ impl PublisherManager {
     fn send(&self, pc_id: &Uuid, message: MessageToPublisher) {
         if let Some(sender) = self.senders.get(pc_id) {
             if let Err(e) = sender.send(message) {
-                error!(
-                    "Error while sending a message to {:?} {:?}",
-                    pc_id, e
-                );
+                error!("Error while sending a message to {:?} {:?}", pc_id, e);
             }
         }
     }
@@ -202,10 +204,7 @@ impl SubscriberManager {
                 msg_type: message.msg_type,
                 message: message.message.clone(),
             }) {
-                error!(
-                    "Error while sending a message to {:?} {:?}",
-                    sub_id, e
-                );
+                error!("Error while sending a message to {:?} {:?}", sub_id, e);
             }
         }
     }
@@ -281,7 +280,7 @@ async fn handle_offer_delegate(
     offer: RTCSessionDescription,
     publisher_manager: PublisherManagerRef,
     subscriber_manager: SubscriberManagerRef,
-) -> Result<impl Reply, WebRTCRuntimeError> {
+) -> Result<impl Reply, ApplicationError> {
     let pc_id = Uuid::new_v4();
     let (tx_ch, rx_ch) = unbounded_channel();
     {
@@ -457,10 +456,21 @@ async fn handle_subscribe_delegate(
     ws: warp::ws::WebSocket,
     publisher_manager: PublisherManagerRef,
     subscriber_manager: SubscriberManagerRef,
-) -> Result<(), WebRTCRuntimeError> {
+) -> Result<(), ApplicationError> {
     let subscriber_id = Uuid::new_v4();
 
     let (mut tx_ws, mut rx_ws) = ws.split();
+    let (tx_ws_facade, rx_ws_facade) = unbounded_channel();
+    let mut rx_ws_facade: UnboundedReceiverStream<warp::ws::Message> =
+        UnboundedReceiverStream::new(rx_ws_facade);
+
+    tokio::spawn(async move {
+        while let Some(msg) = rx_ws_facade.next().await {
+            if let Err(e) = tx_ws.send(msg).await {
+                error!("{:?} on {:?}.", e, subscriber_id);
+            }
+        }
+    });
 
     let (tx_ch, rx_ch) = unbounded_channel();
     {
@@ -484,6 +494,30 @@ async fn handle_subscribe_delegate(
                 let mut subscriber_manager = subscriber_manager_for_state_change.lock().unwrap();
                 subscriber_manager.remove_subscriber(&subscriber_id);
             }
+
+            Box::pin(async {})
+        }))
+        .await;
+
+    let pc_for_renegotiation = peer_connection.clone();
+    let tx_ws_facade_for_renegotiation = tx_ws_facade.clone();
+    peer_connection
+        .on_negotiation_needed(Box::new(move || {
+            let pc_for_renegotiation = pc_for_renegotiation.clone();
+            let tx_ws_facade_for_renegotiation = tx_ws_facade_for_renegotiation.clone();
+
+            info!(
+                "Negotiation has been needed on {:?} - {:?}.",
+                subscriber_id,
+                pc_for_renegotiation.signaling_state()
+            );
+
+            tokio::spawn(async move {
+                if let Err(e) = do_offer(pc_for_renegotiation, tx_ws_facade_for_renegotiation).await
+                {
+                    error!("{:?} on {:?}.", e, subscriber_id);
+                }
+            });
 
             Box::pin(async {})
         }))
@@ -527,10 +561,7 @@ async fn handle_subscribe_delegate(
                             if !local_track_ids.contains(&track_id) {
                                 info!("Remove track {:?} from {:?}", track_id, subscriber_id);
                                 if let Err(e) = peer_connection.remove_track(&sender).await {
-                                    error!(
-                                        "Error while removing track {:?} {:?}.",
-                                        track_id, e
-                                    );
+                                    error!("Error while removing track {:?} {:?}.", track_id, e);
                                 }
                             }
                             existing_track_ids.insert(track_id);
@@ -589,50 +620,6 @@ async fn handle_subscribe_delegate(
                             });
                         }
                     }
-
-                    let offer = match peer_connection.create_offer(None).await {
-                        Ok(offer) => offer,
-                        Err(e) => {
-                            error!("{:?} on {:?}.", e, subscriber_id);
-                            continue;
-                        }
-                    };
-
-                    let mut gather_complete = peer_connection.gathering_complete_promise().await;
-
-                    if let Err(e) = peer_connection.set_local_description(offer).await {
-                        error!("{:?} on {:?}.", e, subscriber_id);
-                        continue;
-                    }
-                    let _ = gather_complete.recv().await;
-                    if let Some(local_description) = peer_connection.local_description().await {
-                        let sdp_str = match serde_json::to_string(&local_description) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                error!("{:?} on {:?}.", e, subscriber_id);
-                                continue;
-                            }
-                        };
-                        let ret_message = match serde_json::to_string(&SubscriberMessage {
-                            msg_type: SubscriberMessageType::Offer,
-                            message: sdp_str,
-                        }) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                error!("{:?} on {:?}.", e, subscriber_id);
-                                continue;
-                            }
-                        };
-
-                        if let Err(e) = tx_ws.send(Message::text(ret_message)).await {
-                            error!("{:?} on {:?}.", e, subscriber_id);
-                        }
-                    } else {
-                        error!(
-                            "generate local_description failed on {:?}.",
-                            subscriber_id
-                        );
-                    }
                 }
                 SubscriberMessageType::Offer => {
                     error!(
@@ -646,9 +633,9 @@ async fn handle_subscribe_delegate(
     });
 
     while let Some(msg) = rx_ws.next().await {
-        match msg.map_err(MessagingError::Web).and_then(|msg| {
-            msg.to_str().map_err(MessagingError::Any).and_then(|s| {
-                serde_json::from_str::<SubscriberMessage>(&s).map_err(MessagingError::Json)
+        match msg.map_err(ApplicationError::Web).and_then(|msg| {
+            msg.to_str().map_err(ApplicationError::Any).and_then(|s| {
+                serde_json::from_str::<SubscriberMessage>(&s).map_err(ApplicationError::Json)
             })
         }) {
             Ok(msg) => {
@@ -660,6 +647,31 @@ async fn handle_subscribe_delegate(
         }
     }
 
+    Ok(())
+}
+
+async fn do_offer(
+    peer_connection: Arc<RTCPeerConnection>,
+    tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
+) -> Result<(), ApplicationError> {
+    let offer = peer_connection.create_offer(None).await?;
+
+    let mut gather_complete = peer_connection.gathering_complete_promise().await;
+
+    peer_connection.set_local_description(offer).await?;
+
+    let _ = gather_complete.recv().await;
+
+    if let Some(local_description) = peer_connection.local_description().await {
+        let sdp_str = serde_json::to_string(&local_description)?;
+
+        let ret_message = serde_json::to_string(&SubscriberMessage {
+            msg_type: SubscriberMessageType::Offer,
+            message: sdp_str,
+        })?;
+
+        tx_ws.send(Message::text(ret_message))?;
+    }
     Ok(())
 }
 

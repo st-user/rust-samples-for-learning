@@ -1,14 +1,13 @@
 <template>
 	<h1>Simple multiple producers and multiple consumers</h1>
-	<div class="startButtons">
-		<button type="button" @click="publish" :disabled="startButtonDisabled">publish</button>
-		<button type="button" @click="subscribe" :disabled="startButtonDisabled">subscribe</button>
+	<div>
+		<button type="button" @click="start" :disabled="startButtonDisabled">start</button>
 	</div>
-	<div v-if="isPublisher">
+	<div v-if="isStarted">
 		<h2 class="publisher">My Video</h2>
 		<video :src-object.prop.camel="srcObject" autoplay controls :muted="muted"></video>
 	</div>
-	<div v-if="isSubscriber">
+	<div v-if="isStarted">
 		<h2 class="subscriber">Watching</h2>
 		<template v-for="video in videos" :key="video.id">
 			<h3>{{ video.id }}</h3>
@@ -21,9 +20,8 @@
 import { defineComponent, reactive } from 'vue';
 
 enum AppState {
-	Publisher,
-	Subscriber,
-	None
+	Init,
+	Started
 }
 
 interface DataType {
@@ -96,6 +94,7 @@ class SubscriptionHandler {
 
 		const isHttps = location.protocol.startsWith('https:');
 		const scheme = isHttps ? 'wss:' : 'ws:';
+		const pc = this.initRTCPeerConnection();
 		this.socket = new WebSocket(`${scheme}//${location.host}/ws-app/subscribe`);
 		this.socket.addEventListener('message', async (event: MessageEvent) => {
 
@@ -106,11 +105,6 @@ class SubscriptionHandler {
 
 				if (!message.message) {
 					console.error('Invalid message format', message);
-					break;
-				}
-				const pc = this.pc;
-				if (!pc) {
-					console.error('pc is null');
 					break;
 				}
 
@@ -138,7 +132,7 @@ class SubscriptionHandler {
 		});
 	}
 
-	init(): void {
+	private initRTCPeerConnection(): RTCPeerConnection {
 
 		const pc = newRTCPeerConnection();
 
@@ -170,15 +164,13 @@ class SubscriptionHandler {
 				};
 			}
 		};
-		this.pc = pc;
+		return pc;
 	}
 
 	sendMessage(text: string): void {
 		this.socket.send(text);
 	}
 }
-
-const subscriptionHandler = new SubscriptionHandler();
 
 async function doPublish(data: DataType): Promise<void> {
 
@@ -221,35 +213,29 @@ const App = defineComponent({
 			srcObject: null,
 			muted: false,
 			videos: videoHandle.videos,
-			state: AppState.None
+			state: AppState.Init
 		};
 	},
 	methods: {
-		publish(): void {
-			this.state = AppState.Publisher;
-			doPublish(this);
-		},
-		subscribe(): void {
-			this.state = AppState.Subscriber;
-			subscriptionHandler.init();
-			subscriptionHandler.sendMessage(JSON.stringify({
-				msg_type: SubscriberMessageType.Start,
-				message: ''
-			} as SubscriberMessage));
+		start(): void {
+			this.state = AppState.Started;
+			const subscriptionHandler = new SubscriptionHandler();
+			doPublish(this).then(() => {
+				subscriptionHandler.sendMessage(JSON.stringify({
+					msg_type: SubscriberMessageType.Start,
+					message: ''
+				} as SubscriberMessage));
+			});
 		}
 	},
 	computed: {
 		startButtonDisabled(): boolean {
 			const data = this as DataType;
-			return data.state != AppState.None;
+			return data.state != AppState.Init;
 		},
-		isPublisher(): boolean {
+		isStarted(): boolean {
 			const data = this as DataType;
-			return data.state === AppState.Publisher;
-		},
-		isSubscriber(): boolean {
-			const data = this as DataType;
-			return data.state === AppState.Subscriber;
+			return data.state === AppState.Started;
 		}
 	}
 });
