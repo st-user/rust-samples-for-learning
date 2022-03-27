@@ -25,6 +25,7 @@ cargo run
 ### client(javascript)
 
 ``` bash
+cd client
 npm run start
 ```
 
