@@ -439,7 +439,7 @@ async fn handle_peer_delegate(
                     &peer_id,
                     pc_for_renegotiation,
                     tx_ws_facade_for_renegotiation,
-                    making_offer
+                    making_offer,
                 )
                 .await
                 {
@@ -457,11 +457,9 @@ async fn handle_peer_delegate(
 
     tokio::spawn(async move {
         while let Some(msg) = rx_main_to_subscriber.next().await {
-
             let pc_for_prepare = peer_connection.clone();
             let tx_ws_facade_for_prepare = tx_ws_facade.clone();
             let making_offer_for_prepare = making_offer.clone();
-            
             match msg.msg_type {
                 SubscriberMessageType::Prepare => {
                     info!("Preparation is requested on {:?}.", peer_id);
@@ -470,7 +468,7 @@ async fn handle_peer_delegate(
                         &peer_id,
                         pc_for_prepare,
                         tx_ws_facade_for_prepare,
-                        making_offer_for_prepare
+                        making_offer_for_prepare,
                     )
                     .await
                     {
@@ -535,7 +533,10 @@ async fn handle_peer_delegate(
                     for (publisher_peer_id, local_track) in local_tracks {
                         let track_id = local_track.id();
                         if existing_track_ids.contains(track_id) {
-                            info!("The specified track already exists {:?} on {:?}.", track_id, peer_id);
+                            info!(
+                                "The specified track already exists {:?} on {:?}.",
+                                track_id, peer_id
+                            );
                             continue;
                         }
                         let track_id = track_id.to_owned();
@@ -582,13 +583,12 @@ async fn handle_peer_delegate(
                         &peer_id,
                         pc_for_prepare,
                         tx_ws_facade_for_prepare,
-                        making_offer_for_prepare
+                        making_offer_for_prepare,
                     )
                     .await
                     {
                         error!("{:?} on {:?}.", e, peer_id);
                     }
-
                 }
                 SubscriberMessageType::Offer => {
                     error!(
@@ -625,12 +625,11 @@ async fn do_offer(
     tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
     making_offer: Arc<Mutex<bool>>,
 ) -> Result<(), ApplicationError> {
-
     {
         let mut is_making_offer = making_offer.lock().unwrap();
         if *is_making_offer {
             warn!("An offer is being processed on {:?}", peer_id);
-            return Ok(())
+            return Ok(());
         }
         *is_making_offer = true;
     }
@@ -640,7 +639,7 @@ async fn do_offer(
         Err(e) => {
             let mut is_making_offer = making_offer.lock().unwrap();
             *is_making_offer = false;
-            return Err(ApplicationError::WebRTC(e))
+            return Err(ApplicationError::WebRTC(e));
         }
     };
 
@@ -649,19 +648,18 @@ async fn do_offer(
     if let Err(e) = peer_connection.set_local_description(offer).await {
         let mut is_making_offer = making_offer.lock().unwrap();
         *is_making_offer = false;
-        return Err(ApplicationError::WebRTC(e))
+        return Err(ApplicationError::WebRTC(e));
     }
 
     let _ = gather_complete.recv().await;
 
     if let Some(local_description) = peer_connection.local_description().await {
-
         let sdp_str = match serde_json::to_string(&local_description) {
             Ok(sdp_str) => sdp_str,
             Err(e) => {
                 let mut is_making_offer = making_offer.lock().unwrap();
                 *is_making_offer = false;
-                return Err(ApplicationError::Json(e))
+                return Err(ApplicationError::Json(e));
             }
         };
 
@@ -673,14 +671,14 @@ async fn do_offer(
             Err(e) => {
                 let mut is_making_offer = making_offer.lock().unwrap();
                 *is_making_offer = false;
-                return Err(ApplicationError::Json(e))
-            }  
+                return Err(ApplicationError::Json(e));
+            }
         };
 
         if let Err(e) = tx_ws.send(Message::text(ret_message)) {
             let mut is_making_offer = making_offer.lock().unwrap();
             *is_making_offer = false;
-            return Err(ApplicationError::WsSend(e))
+            return Err(ApplicationError::WsSend(e));
         }
     }
     let mut is_making_offer = making_offer.lock().unwrap();
