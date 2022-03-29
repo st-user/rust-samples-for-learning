@@ -25,7 +25,6 @@ enum AppState {
 }
 
 interface DataType {
-	message: string,
 	srcObject: MediaStream | null,
 	videos: Array<VideoWindow>,
 	state: AppState
@@ -193,7 +192,6 @@ class ConnectionHandler {
 const App = defineComponent({
 	data(): DataType {
 		return {
-			message: '',
 			srcObject: null,
 			videos: [],
 			state: AppState.Init
