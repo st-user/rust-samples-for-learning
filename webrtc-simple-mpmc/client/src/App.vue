@@ -5,7 +5,7 @@
 	</div>
 	<div v-if="isStarted">
 		<h2 class="publisher">My Video</h2>
-		<video :src-object.prop.camel="srcObject" autoplay controls :muted="muted"></video>
+		<video :src-object.prop.camel="srcObject" autoplay controls></video>
 	</div>
 	<div v-if="isStarted">
 		<h2 class="subscriber">Watching</h2>
@@ -27,7 +27,6 @@ enum AppState {
 interface DataType {
 	message: string,
 	srcObject: MediaStream | null,
-	muted: boolean,
 	videos: Array<VideoWindow>,
 	state: AppState
 }
@@ -49,39 +48,7 @@ interface SubscriberMessage {
 	message: string
 }
 
-// References
-// https://github.com/aiortc/aiortc/blob/main/examples/webcam/client.js
-// 
-
-async function gatherIceCandidate(pc: RTCPeerConnection): Promise<void> {
-	return new Promise(resolve => {
-
-		if (pc.iceGatheringState === 'complete') {
-			resolve();
-		} else {
-			const checkState = () => {
-				if (pc.iceGatheringState === 'complete') {
-					pc.removeEventListener('icegatheringstatechange', checkState);
-					resolve();
-				}
-			};
-			pc.addEventListener('icegatheringstatechange', checkState);
-		}
-
-	});
-}
-
-function newRTCPeerConnection(): RTCPeerConnection {
-	return new RTCPeerConnection({
-		iceServers: [
-			{
-				urls: 'stun:stun.l.google.com:19302'
-			}
-		]
-	});
-}
-
-class SubscriptionHandler {
+class ConnectionHandler {
 
 	private socket: WebSocket | undefined;
 	private pc: RTCPeerConnection | undefined;
@@ -95,9 +62,6 @@ class SubscriptionHandler {
 		this.socket = new WebSocket(`${scheme}//${location.host}/ws-app/subscribe`);
 
 		this.socket.addEventListener('open', () => {
-
-			console.log(`senders ${pc.getSenders().length}`, pc.getSenders());
-			console.log(`senders ${pc.getReceivers().length}`, pc.getReceivers());
 
 			this.sendMessage(JSON.stringify({
 				msg_type: SubscriberMessageType.Prepare,
@@ -120,7 +84,7 @@ class SubscriptionHandler {
 				console.debug(offer);
 				await pc.setRemoteDescription(offer);
 				await pc.setLocalDescription(await pc.createAnswer());
-				await gatherIceCandidate(pc);
+				await this.gatherIceCandidate(pc);
 				const answer = pc.localDescription;
 
 				if (!answer) {
@@ -142,7 +106,7 @@ class SubscriptionHandler {
 
 	private async initRTCPeerConnection(data: DataType): Promise<RTCPeerConnection> {
 
-		const pc = newRTCPeerConnection();
+		const pc = this.newRTCPeerConnection();
 
 		pc.ontrack = (event: RTCTrackEvent) => {
 			const videoId = event.streams[0].id;
@@ -184,7 +148,40 @@ class SubscriptionHandler {
 		return pc;
 	}
 
-	sendMessage(text: string): void {
+	// References
+	// https://github.com/aiortc/aiortc/blob/main/examples/webcam/client.js
+	// 
+
+	private async gatherIceCandidate(pc: RTCPeerConnection): Promise<void> {
+		return new Promise(resolve => {
+
+			if (pc.iceGatheringState === 'complete') {
+				resolve();
+			} else {
+				const checkState = () => {
+					if (pc.iceGatheringState === 'complete') {
+						pc.removeEventListener('icegatheringstatechange', checkState);
+						resolve();
+					}
+				};
+				pc.addEventListener('icegatheringstatechange', checkState);
+			}
+
+		});
+	}
+
+	private newRTCPeerConnection(): RTCPeerConnection {
+		return new RTCPeerConnection({
+			iceServers: [
+				{
+					urls: 'stun:stun.l.google.com:19302'
+				}
+			]
+		});
+	}
+
+
+	private sendMessage(text: string): void {
 		if (!this.socket) {
 			console.error('Socket is null');
 			return;
@@ -198,7 +195,6 @@ const App = defineComponent({
 		return {
 			message: '',
 			srcObject: null,
-			muted: false,
 			videos: [],
 			state: AppState.Init
 		};
@@ -206,8 +202,8 @@ const App = defineComponent({
 	methods: {
 		start(): void {
 			this.state = AppState.Started;
-			const subscriptionHandler = new SubscriptionHandler();
-			subscriptionHandler.init(this);
+			const handler = new ConnectionHandler();
+			handler.init(this);
 		}
 	},
 	computed: {
