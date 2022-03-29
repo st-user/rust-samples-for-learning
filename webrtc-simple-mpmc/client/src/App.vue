@@ -17,7 +17,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, reactive } from 'vue';
+import { defineComponent } from 'vue';
 
 enum AppState {
 	Init,
@@ -40,18 +40,14 @@ interface VideoWindow {
 enum SubscriberMessageType {
 	Offer = 'Offer',
 	Answer = 'Answer',
-	Start = 'Start'
+	Start = 'Start',
+	Prepare = 'Prepare'
 }
 
 interface SubscriberMessage {
 	msg_type: SubscriberMessageType,
 	message: string
 }
-
-
-const videoHandle = reactive({
-	videos: new Array<VideoWindow>()
-});
 
 // References
 // https://github.com/aiortc/aiortc/blob/main/examples/webcam/client.js
@@ -87,15 +83,27 @@ function newRTCPeerConnection(): RTCPeerConnection {
 
 class SubscriptionHandler {
 
-	private socket: WebSocket;
+	private socket: WebSocket | undefined;
 	private pc: RTCPeerConnection | undefined;
+	
+	async init(data: DataType): Promise<void> {
 
-	constructor() {
+		const pc = await this.initRTCPeerConnection(data);
 
 		const isHttps = location.protocol.startsWith('https:');
 		const scheme = isHttps ? 'wss:' : 'ws:';
-		const pc = this.initRTCPeerConnection();
 		this.socket = new WebSocket(`${scheme}//${location.host}/ws-app/subscribe`);
+
+		this.socket.addEventListener('open', () => {
+
+			console.log(`senders ${pc.getSenders().length}`, pc.getSenders());
+			console.log(`senders ${pc.getReceivers().length}`, pc.getReceivers());
+
+			this.sendMessage(JSON.stringify({
+				msg_type: SubscriberMessageType.Prepare,
+				message: ''
+			} as SubscriberMessage));
+		});
 		this.socket.addEventListener('message', async (event: MessageEvent) => {
 
 			const message = JSON.parse(event.data) as SubscriberMessage;
@@ -120,7 +128,7 @@ class SubscriptionHandler {
 					break;
 				}
 
-				this.socket.send(JSON.stringify({
+				this.sendMessage(JSON.stringify({
 					msg_type: SubscriberMessageType.Answer,
 					message: JSON.stringify(answer)
 				}));
@@ -132,7 +140,7 @@ class SubscriptionHandler {
 		});
 	}
 
-	private initRTCPeerConnection(): RTCPeerConnection {
+	private async initRTCPeerConnection(data: DataType): Promise<RTCPeerConnection> {
 
 		const pc = newRTCPeerConnection();
 
@@ -141,69 +149,48 @@ class SubscriptionHandler {
 
 			console.debug('on_track', event.track);
 
-			if (event.track.kind === 'video') {
+			if (videoId.startsWith('sfu-stream-') && event.track.kind === 'video') {
 
-				videoHandle.videos.push({
+				data.videos.push({
 					id: videoId,
 					srcObject: event.streams[0]
 				} as VideoWindow);
 
 				event.track.onmute = () => {
 					console.debug(`mute ${videoId}`);
-					for (let i = 0; videoHandle.videos.length; i++) {
-						const video = videoHandle.videos[i];
+					for (let i = 0; data.videos.length; i++) {
+						const video = data.videos[i];
 						if (!video) {
 							continue;
 						}
 						if (videoId === video.id) {
 							console.debug(`Remove the video whose index is ${i}`);
-							videoHandle.videos.splice(i, 1);
+							data.videos.splice(i, 1);
 							break;
 						}
 					}
 				};
 			}
 		};
+		const stream = await navigator.mediaDevices.getUserMedia({
+			video: true,
+			audio: true
+		});
+
+		data.srcObject = stream;
+		stream.getTracks()
+			.forEach(track => pc.addTrack(track, stream));
+
 		return pc;
 	}
 
 	sendMessage(text: string): void {
+		if (!this.socket) {
+			console.error('Socket is null');
+			return;
+		}
 		this.socket.send(text);
 	}
-}
-
-async function doPublish(data: DataType): Promise<void> {
-
-	const pc = newRTCPeerConnection();
-
-	const stream = await navigator.mediaDevices.getUserMedia({
-		video: true,
-		audio: true
-	});
-
-	data.srcObject = stream;
-	stream.getTracks()
-		.forEach(track => pc.addTrack(track, stream));
-
-	await pc.setLocalDescription(await pc.createOffer());
-	await gatherIceCandidate(pc);
-	const offer = pc.localDescription as RTCSessionDescription;
-	if (!offer) {
-		console.error('Offer is null');
-		return;
-	}
-	const answer = await fetch('/app/offer', {
-		body: JSON.stringify({
-			sdp: offer.sdp,
-			type: offer.type,
-		}),
-		headers: {
-			'Content-Type': 'application/json'
-		},
-		method: 'POST'
-	}).then(res => res.json());
-
-	await pc.setRemoteDescription(answer);
 }
 
 const App = defineComponent({
@@ -212,7 +199,7 @@ const App = defineComponent({
 			message: '',
 			srcObject: null,
 			muted: false,
-			videos: videoHandle.videos,
+			videos: [],
 			state: AppState.Init
 		};
 	},
@@ -220,12 +207,7 @@ const App = defineComponent({
 		start(): void {
 			this.state = AppState.Started;
 			const subscriptionHandler = new SubscriptionHandler();
-			doPublish(this).then(() => {
-				subscriptionHandler.sendMessage(JSON.stringify({
-					msg_type: SubscriberMessageType.Start,
-					message: ''
-				} as SubscriberMessage));
-			});
+			subscriptionHandler.init(this);
 		}
 	},
 	computed: {
@@ -244,9 +226,9 @@ export default App;
 
 <style scoped>
 .publisher {
-	color:rgb(21, 9, 77);
+	color: rgb(21, 9, 77);
 }
 .subscriber {
-	color:rgb(90, 6, 17);
+	color: rgb(90, 6, 17);
 }
 </style>
