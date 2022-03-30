@@ -29,9 +29,11 @@ use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndicat
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::Error;
 
-use log::{error, info, warn};
+use log::{error, info};
 
 mod logger;
+
+const TRACK_NAME_PREF: &str = "sfu-track-";
 
 #[derive(Deserialize, Serialize, Debug)]
 struct OfferBody {
@@ -51,10 +53,10 @@ enum MessageToPublisher {
 
 #[derive(Deserialize, Serialize, Debug, Copy, Clone)]
 enum SubscriberMessageType {
+    Prepare,
     Start,
     Offer,
     Answer,
-    Prepare,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -313,7 +315,12 @@ async fn handle_peer_delegate(
                     tokio::spawn(async move {
                         let local_track = Arc::new(TrackLocalStaticRTP::new(
                             track.codec().await.capability,
-                            format!("t-{:?}-{:?}", track.kind(), Uuid::new_v4()),
+                            format!(
+                                "{}-{:?}-{:?}",
+                                TRACK_NAME_PREF,
+                                track.kind(),
+                                Uuid::new_v4()
+                            ),
                             format!("sfu-stream-{:?}", peer_id),
                         ));
 
@@ -412,16 +419,11 @@ async fn handle_peer_delegate(
     });
 
     //
-    // Reference: https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation
-    //
-    let making_offer = Arc::new(Mutex::new(false));
-
-    //
     // Detect 'negotiation needed' events to send an offer.
+    // Reference: https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation
     //
     let pc_for_renegotiation = peer_connection.clone();
     let tx_ws_facade_for_renegotiation = tx_ws_facade.clone();
-    let making_offer_for_renegotiation = making_offer.clone();
     peer_connection
         .on_negotiation_needed(Box::new(move || {
             let pc_for_renegotiation = pc_for_renegotiation.clone();
@@ -433,15 +435,8 @@ async fn handle_peer_delegate(
                 pc_for_renegotiation.signaling_state()
             );
 
-            let making_offer = Arc::clone(&making_offer_for_renegotiation);
             tokio::spawn(async move {
-                if let Err(e) = do_offer(
-                    &peer_id,
-                    pc_for_renegotiation,
-                    tx_ws_facade_for_renegotiation,
-                    making_offer,
-                )
-                .await
+                if let Err(e) = do_offer(pc_for_renegotiation, tx_ws_facade_for_renegotiation).await
                 {
                     error!("{:?} on {:?}.", e, peer_id);
                 }
@@ -459,19 +454,11 @@ async fn handle_peer_delegate(
         while let Some(msg) = rx_main_to_subscriber.next().await {
             let pc_for_prepare = peer_connection.clone();
             let tx_ws_facade_for_prepare = tx_ws_facade.clone();
-            let making_offer_for_prepare = making_offer.clone();
             match msg.msg_type {
                 SubscriberMessageType::Prepare => {
                     info!("Preparation is requested on {:?}.", peer_id);
 
-                    if let Err(e) = do_offer(
-                        &peer_id,
-                        pc_for_prepare,
-                        tx_ws_facade_for_prepare,
-                        making_offer_for_prepare,
-                    )
-                    .await
-                    {
+                    if let Err(e) = do_offer(pc_for_prepare, tx_ws_facade_for_prepare).await {
                         error!("{:?} on {:?}.", e, peer_id);
                     }
                 }
@@ -509,6 +496,11 @@ async fn handle_peer_delegate(
                     for sender in senders {
                         if let Some(t) = sender.track().await {
                             let track_id = t.id().to_owned();
+
+                            if track_id.find(TRACK_NAME_PREF).unwrap_or(1) != 0 {
+                                continue;
+                            }
+
                             if !local_track_ids.contains(&track_id) {
                                 info!("Remove the track {:?} from {:?}", track_id, peer_id);
                                 if let Err(e) = peer_connection.remove_track(&sender).await {
@@ -579,14 +571,7 @@ async fn handle_peer_delegate(
                         info!("Add a track {:?} to {:?}.", track_id, peer_id);
                     }
 
-                    if let Err(e) = do_offer(
-                        &peer_id,
-                        pc_for_prepare,
-                        tx_ws_facade_for_prepare,
-                        making_offer_for_prepare,
-                    )
-                    .await
-                    {
+                    if let Err(e) = do_offer(pc_for_prepare, tx_ws_facade_for_prepare).await {
                         error!("{:?} on {:?}.", e, peer_id);
                     }
                 }
@@ -620,69 +605,27 @@ async fn handle_peer_delegate(
 }
 
 async fn do_offer(
-    peer_id: &Uuid,
     peer_connection: Arc<RTCPeerConnection>,
     tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
-    making_offer: Arc<Mutex<bool>>,
 ) -> Result<(), ApplicationError> {
-    {
-        let mut is_making_offer = making_offer.lock().unwrap();
-        if *is_making_offer {
-            warn!("An offer is being processed on {:?}", peer_id);
-            return Ok(());
-        }
-        *is_making_offer = true;
-    }
-
-    let offer = match peer_connection.create_offer(None).await {
-        Ok(offer) => offer,
-        Err(e) => {
-            let mut is_making_offer = making_offer.lock().unwrap();
-            *is_making_offer = false;
-            return Err(ApplicationError::WebRTC(e));
-        }
-    };
+    let offer = peer_connection.create_offer(None).await?;
 
     let mut gather_complete = peer_connection.gathering_complete_promise().await;
 
-    if let Err(e) = peer_connection.set_local_description(offer).await {
-        let mut is_making_offer = making_offer.lock().unwrap();
-        *is_making_offer = false;
-        return Err(ApplicationError::WebRTC(e));
-    }
+    peer_connection.set_local_description(offer).await?;
 
     let _ = gather_complete.recv().await;
 
     if let Some(local_description) = peer_connection.local_description().await {
-        let sdp_str = match serde_json::to_string(&local_description) {
-            Ok(sdp_str) => sdp_str,
-            Err(e) => {
-                let mut is_making_offer = making_offer.lock().unwrap();
-                *is_making_offer = false;
-                return Err(ApplicationError::Json(e));
-            }
-        };
+        let sdp_str = serde_json::to_string(&local_description)?;
 
-        let ret_message = match serde_json::to_string(&SubscriberMessage {
+        let ret_message = serde_json::to_string(&SubscriberMessage {
             msg_type: SubscriberMessageType::Offer,
             message: sdp_str,
-        }) {
-            Ok(ret_message) => ret_message,
-            Err(e) => {
-                let mut is_making_offer = making_offer.lock().unwrap();
-                *is_making_offer = false;
-                return Err(ApplicationError::Json(e));
-            }
-        };
+        })?;
 
-        if let Err(e) = tx_ws.send(Message::text(ret_message)) {
-            let mut is_making_offer = making_offer.lock().unwrap();
-            *is_making_offer = false;
-            return Err(ApplicationError::WsSend(e));
-        }
+        tx_ws.send(Message::text(ret_message))?
     }
-    let mut is_making_offer = making_offer.lock().unwrap();
-    *is_making_offer = false;
     Ok(())
 }
 

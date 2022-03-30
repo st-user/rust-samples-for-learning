@@ -8,7 +8,7 @@
 		<video :src-object.prop.camel="srcObject" autoplay controls></video>
 	</div>
 	<div v-if="isStarted">
-		<h2 class="subscriber">Watching</h2>
+		<h2 class="subscriber">Watching ({{ videos.length }})</h2>
 		<template v-for="video in videos" :key="video.id">
 			<h3>{{ video.id }}</h3>
 			<video :src-object.prop.camel="video.srcObject" autoplay controls></video>
@@ -61,7 +61,6 @@ class ConnectionHandler {
 		this.socket = new WebSocket(`${scheme}//${location.host}/ws-app/subscribe`);
 
 		this.socket.addEventListener('open', () => {
-
 			this.sendMessage(JSON.stringify({
 				msg_type: SubscriberMessageType.Prepare,
 				message: ''
@@ -203,6 +202,11 @@ const App = defineComponent({
 			const handler = new ConnectionHandler();
 			handler.init(this);
 		}
+	},
+	mounted() {
+		setTimeout(() => {
+			this.start();
+		}, 1000);
 	},
 	computed: {
 		startButtonDisabled(): boolean {
