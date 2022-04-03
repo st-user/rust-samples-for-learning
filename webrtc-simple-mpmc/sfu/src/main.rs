@@ -13,10 +13,11 @@ use uuid::Uuid;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
-use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
@@ -29,9 +30,11 @@ use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndicat
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::Error;
 
+use dotenv::dotenv;
 use log::{error, info};
 
 mod logger;
+mod ice;
 
 const TRACK_NAME_PREF: &str = "sfu-track-";
 
@@ -205,10 +208,16 @@ type PeerManagerRef = Arc<Mutex<PeerManager>>;
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
     logger::init_logger();
 
+    let context = warp::path("app");
     let ws_context = warp::path("ws-app");
     let peer_manager = Arc::new(Mutex::new(PeerManager::new()));
+
+    let ice_servers = context
+        .and(warp::path("ice-servers"))
+        .and_then(ice_servers);
 
     let subscribe = ws_context
         .and(warp::path("subscribe"))
@@ -218,7 +227,7 @@ async fn main() {
             ws.on_upgrade(|websocket| handle_peer(websocket, peer_manager))
         });
 
-    let route = subscribe.recover(handle_rejection);
+    let route = ice_servers.or(subscribe).recover(handle_rejection);
 
     warp::serve(route).run(([127, 0, 0, 1], 9001)).await;
 }
@@ -227,6 +236,11 @@ fn with_peer_manager(
     peer_manager: PeerManagerRef,
 ) -> impl Filter<Extract = (PeerManagerRef,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || peer_manager.clone())
+}
+
+async fn ice_servers() -> Result<impl Reply, Rejection> {
+    let ice_servers = ice::create_ice_server_config_for_browser("client");
+    Ok(ok_with_json(&ice_servers))
 }
 
 async fn handle_peer(ws: warp::ws::WebSocket, peer_manager: PeerManagerRef) {
@@ -610,13 +624,18 @@ async fn do_offer(
 ) -> Result<(), ApplicationError> {
     let offer = peer_connection.create_offer(None).await?;
 
-    let mut gather_complete = peer_connection.gathering_complete_promise().await;
+    // TODO For some reason, this promise resolves before ice_gathering_state become complete.
+    // let mut gather_complete = peer_connection.gathering_complete_promise().await;
 
     peer_connection.set_local_description(offer).await?;
 
-    let _ = gather_complete.recv().await;
+    // let _ = gather_complete.recv().await;
+    while peer_connection.ice_gathering_state() != RTCIceGatheringState::Complete {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
 
     if let Some(local_description) = peer_connection.local_description().await {
+
         let sdp_str = serde_json::to_string(&local_description)?;
 
         let ret_message = serde_json::to_string(&SubscriberMessage {
@@ -639,15 +658,22 @@ async fn new_base_peer_connection() -> Result<RTCPeerConnection, webrtc::Error> 
         .with_media_engine(m)
         .with_interceptor_registry(registry)
         .build();
+
+    let ice_servers = ice::create_ice_server_config("sfu");
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
+        ice_servers: ice_servers,
+        // ice_transport_policy: RTCIceTransportPolicy::Relay,
         ..Default::default()
     };
 
     api.new_peer_connection(config).await
+}
+
+fn ok_with_json<T>(data: &T) -> warp::reply::WithStatus<warp::reply::Json>
+where
+    T: Serialize,
+{
+    warp::reply::with_status(warp::reply::json(data), StatusCode::OK)
 }
 
 async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::Infallible> {

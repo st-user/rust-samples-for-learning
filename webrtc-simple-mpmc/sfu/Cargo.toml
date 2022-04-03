@@ -17,3 +17,7 @@ webrtc = { version = "0.4.*" }
 bytes = { version = "1" }
 log = { version = "0.4.*" }
 env_logger = { version = "0.9.*" }
+hmac = { version = "0.12.*" }
+sha-1 = "0.10.*"
+dotenv = { version = "0.15.*" }
+base64 = { version =  "0.13.*" }

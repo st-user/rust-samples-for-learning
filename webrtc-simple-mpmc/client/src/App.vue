@@ -79,7 +79,9 @@ class ConnectionHandler {
 				}
 
 				const offer = JSON.parse(message.message);
-				console.debug(offer);
+				console.debug('---------------------- offer -----------------------------');
+				console.debug(offer.sdp);
+				console.debug('---------------------- offer -----------------------------');
 				await pc.setRemoteDescription(offer);
 				await pc.setLocalDescription(await pc.createAnswer());
 				await this.gatherIceCandidate(pc);
@@ -89,6 +91,9 @@ class ConnectionHandler {
 					console.error('Answer is null');
 					break;
 				}
+				console.debug('---------------------- answer -----------------------------');
+				console.debug(answer.sdp);
+				console.debug('---------------------- answer -----------------------------');
 
 				this.sendMessage(JSON.stringify({
 					msg_type: SubscriberMessageType.Answer,
@@ -104,7 +109,7 @@ class ConnectionHandler {
 
 	private async initRTCPeerConnection(data: DataType): Promise<RTCPeerConnection> {
 
-		const pc = this.newRTCPeerConnection();
+		const pc = await this.newRTCPeerConnection();
 
 		pc.ontrack = (event: RTCTrackEvent) => {
 			const videoId = event.streams[0].id;
@@ -168,13 +173,13 @@ class ConnectionHandler {
 		});
 	}
 
-	private newRTCPeerConnection(): RTCPeerConnection {
+	private async newRTCPeerConnection(): Promise<RTCPeerConnection> {
+
+		let iceServers = await fetch('/app/ice-servers').then(res => res.json());
+		console.debug(iceServers);
 		return new RTCPeerConnection({
-			iceServers: [
-				{
-					urls: 'stun:stun.l.google.com:19302'
-				}
-			]
+			iceServers: iceServers,
+			// iceTransportPolicy: 'relay'
 		});
 	}
 

@@ -18,6 +18,7 @@ npm install
 
 ``` bash
 cd sfu
+mv sample.env .env
 cargo run
 
 ```
