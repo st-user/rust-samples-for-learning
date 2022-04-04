@@ -44,7 +44,6 @@ const NAME_MAX_LENGTH: usize = 100;
 type DBPool = mobc::Pool<mobc_postgres::PgConnectionManager<tokio_postgres::NoTls>>;
 
 pub async fn room(db_pool: web::Data<DBPool>, room_body: web::Json<RoomBody>) -> impl Responder {
-    
     check_length(&room_body.room_name, "room_name", NAME_MAX_LENGTH)?;
 
     room_delegate(db_pool, &room_body.room_name)
