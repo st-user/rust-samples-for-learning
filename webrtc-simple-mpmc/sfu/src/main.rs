@@ -13,7 +13,7 @@ use uuid::Uuid;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
-use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -31,10 +31,10 @@ use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
 use webrtc::Error;
 
 use dotenv::dotenv;
-use log::{error, info};
+use log::{error, info, warn};
 
-mod logger;
 mod ice;
+mod logger;
 
 const TRACK_NAME_PREF: &str = "sfu-track-";
 
@@ -60,12 +60,44 @@ enum SubscriberMessageType {
     Start,
     Offer,
     Answer,
+    IceCandidate,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 struct SubscriberMessage {
     msg_type: SubscriberMessageType,
     message: String,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct ClientIceCandidate {
+    pub candidate: Option<String>,
+    #[serde(rename = "spdMid")]
+    pub sdp_mid: Option<String>,
+    #[serde(rename = "sdpMLineIndex")]
+    pub sdp_mline_index: Option<u16>,
+    #[serde(rename = "usernameFragment")]
+    pub username_fragment: Option<String>,
+}
+
+impl ClientIceCandidate {
+    fn to_candidate_init(self) -> RTCIceCandidateInit {
+        RTCIceCandidateInit {
+            candidate: self.candidate.unwrap_or("".to_owned()),
+            sdp_mid: self.sdp_mid.unwrap_or("".to_owned()),
+            sdp_mline_index: self.sdp_mline_index.unwrap_or(0u16),
+            username_fragment: self.username_fragment.unwrap_or("".to_owned()),
+        }
+    }
+
+    fn from(another: RTCIceCandidateInit) -> ClientIceCandidate {
+        ClientIceCandidate {
+            candidate: Some(another.candidate),
+            sdp_mid: Some(another.sdp_mid),
+            sdp_mline_index: Some(another.sdp_mline_index),
+            username_fragment: Some(another.username_fragment),
+        }
+    }
 }
 
 type WsSendError = tokio::sync::mpsc::error::SendError<warp::ws::Message>;
@@ -215,9 +247,7 @@ async fn main() {
     let ws_context = warp::path("ws-app");
     let peer_manager = Arc::new(Mutex::new(PeerManager::new()));
 
-    let ice_servers = context
-        .and(warp::path("ice-servers"))
-        .and_then(ice_servers);
+    let ice_servers = context.and(warp::path("ice-servers")).and_then(ice_servers);
 
     let subscribe = ws_context
         .and(warp::path("subscribe"))
@@ -460,6 +490,55 @@ async fn handle_peer_delegate(
         }))
         .await;
 
+    let tx_ws_facade_for_ice_candidate = tx_ws_facade.clone();
+    peer_connection
+        .on_ice_candidate(Box::new(move |candidate| {
+            let candidate = if let Some(candidate) = candidate {
+                candidate
+            } else {
+                warn!("ICE candidate is not present on {:?}", peer_id);
+                return Box::pin(async {});
+            };
+
+            let tx_ws_facade_for_ice_candidate = tx_ws_facade_for_ice_candidate.clone();
+            tokio::spawn(async move {
+                let candidate_json = match candidate.to_json().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("{:?} on {:?}.", e, peer_id);
+                        return;
+                    }
+                };
+
+                let candidate_str =
+                    match serde_json::to_string(&ClientIceCandidate::from(candidate_json)) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("{:?} on {:?}.", e, peer_id);
+                            return;
+                        }
+                    };
+
+                let ret_message = match serde_json::to_string(&SubscriberMessage {
+                    msg_type: SubscriberMessageType::IceCandidate,
+                    message: candidate_str,
+                }) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!("{:?} on {:?}.", e, peer_id);
+                        return;
+                    }
+                };
+
+                if let Err(e) = tx_ws_facade_for_ice_candidate.send(Message::text(ret_message)) {
+                    error!("{:?} on {:?}.", e, peer_id);
+                }
+            });
+
+            Box::pin(async {})
+        }))
+        .await;
+
     //
     // The main event loop that handles messages for negotiation.
     //
@@ -473,6 +552,29 @@ async fn handle_peer_delegate(
                     info!("Preparation is requested on {:?}.", peer_id);
 
                     if let Err(e) = do_offer(pc_for_prepare, tx_ws_facade_for_prepare).await {
+                        error!("{:?} on {:?}.", e, peer_id);
+                    }
+                }
+                SubscriberMessageType::IceCandidate => {
+                    if &msg.message == "null" {
+                        continue;
+                    }
+
+                    info!(
+                        "An ICE candidate has been received on {:?} {}.",
+                        peer_id, &msg.message
+                    );
+
+                    let ice_candidate =
+                        match serde_json::from_str::<ClientIceCandidate>(&msg.message) {
+                            Ok(c) => c.to_candidate_init(),
+                            Err(e) => {
+                                error!("{:?} on {:?}", e, peer_id);
+                                continue;
+                            }
+                        };
+
+                    if let Err(e) = pc_for_prepare.add_ice_candidate(ice_candidate).await {
                         error!("{:?} on {:?}.", e, peer_id);
                     }
                 }
@@ -630,12 +732,8 @@ async fn do_offer(
     peer_connection.set_local_description(offer).await?;
 
     // let _ = gather_complete.recv().await;
-    while peer_connection.ice_gathering_state() != RTCIceGatheringState::Complete {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
 
     if let Some(local_description) = peer_connection.local_description().await {
-
         let sdp_str = serde_json::to_string(&local_description)?;
 
         let ret_message = serde_json::to_string(&SubscriberMessage {

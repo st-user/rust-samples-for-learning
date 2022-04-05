@@ -39,7 +39,8 @@ enum SubscriberMessageType {
 	Offer = 'Offer',
 	Answer = 'Answer',
 	Start = 'Start',
-	Prepare = 'Prepare'
+	Prepare = 'Prepare',
+	IceCandidate = 'IceCandidate',
 }
 
 interface SubscriberMessage {
@@ -59,6 +60,13 @@ class ConnectionHandler {
 		const isHttps = location.protocol.startsWith('https:');
 		const scheme = isHttps ? 'wss:' : 'ws:';
 		this.socket = new WebSocket(`${scheme}//${location.host}/ws-app/subscribe`);
+
+		pc.addEventListener('icecandidate', (event: RTCPeerConnectionIceEvent) => {
+			this.sendMessage(JSON.stringify({
+				msg_type: SubscriberMessageType.IceCandidate,
+				message: JSON.stringify(event.candidate)
+			}));
+		});
 
 		this.socket.addEventListener('open', () => {
 			this.sendMessage(JSON.stringify({
@@ -84,7 +92,7 @@ class ConnectionHandler {
 				console.debug('---------------------- offer -----------------------------');
 				await pc.setRemoteDescription(offer);
 				await pc.setLocalDescription(await pc.createAnswer());
-				await this.gatherIceCandidate(pc);
+				// await this.gatherIceCandidate(pc);
 				const answer = pc.localDescription;
 
 				if (!answer) {
@@ -99,6 +107,12 @@ class ConnectionHandler {
 					msg_type: SubscriberMessageType.Answer,
 					message: JSON.stringify(answer)
 				}));
+				break;
+			}
+			case SubscriberMessageType.IceCandidate: {
+				const iceCandidate = JSON.parse(message.message);
+				console.debug('Receive ICE candidate: ', iceCandidate);
+				pc.addIceCandidate(iceCandidate);
 				break;
 			}
 			default:
@@ -151,10 +165,12 @@ class ConnectionHandler {
 		return pc;
 	}
 
+	// 
+	// Vanilla ICE
 	// References
 	// https://github.com/aiortc/aiortc/blob/main/examples/webcam/client.js
 	// 
-
+	/*
 	private async gatherIceCandidate(pc: RTCPeerConnection): Promise<void> {
 		return new Promise(resolve => {
 
@@ -171,7 +187,7 @@ class ConnectionHandler {
 			}
 
 		});
-	}
+	}*/
 
 	private async newRTCPeerConnection(): Promise<RTCPeerConnection> {
 
