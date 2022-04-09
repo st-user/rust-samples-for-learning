@@ -75,11 +75,17 @@ fn with_peer_manager(
     warp::any().map(move || peer_manager.clone())
 }
 
+/// The endpoint serving the dictionaries of ice servers.
+/// 
+/// The response JSON can be parsed to an array of 'RTCIceServer'.
+/// 
 async fn ice_servers() -> Result<impl Reply, Rejection> {
     let ice_servers = ice::create_ice_server_config_for_browser("client");
     Ok(ok_with_json(&ice_servers))
 }
 
+/// Handles the upgrade request for Websocket and initializes RTCPeerConnection.
+/// 
 async fn handle_peer(ws: warp::ws::WebSocket, peer_manager: PeerManagerRef) {
     if let Err(e) = handle_peer_delegate(ws, peer_manager).await {
         error!("Error on handle_subscribe {:?}.", e);

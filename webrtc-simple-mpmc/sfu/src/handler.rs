@@ -86,6 +86,8 @@ impl ClientIceCandidate {
 type ToPublisherChannel = tokio::sync::mpsc::UnboundedSender<MessageToPublisher>;
 type ToSubscriberChannel = tokio::sync::mpsc::UnboundedSender<SubscriberMessage>;
 
+/// A PeerManager manages the media tracks and channels for communication.
+/// 
 pub struct PeerManager {
     tracks: HashMap<Uuid, Vec<Arc<TrackLocalStaticRTP>>>,
     to_publishers: HashMap<Uuid, ToPublisherChannel>,
@@ -171,6 +173,8 @@ impl PeerManager {
 
 pub type PeerManagerRef = Arc<Mutex<PeerManager>>;
 
+/// Handles 'track' events on RTCPeerConnection.
+/// 
 pub fn on_track(
     peer_id: &Uuid,
     track: Option<Arc<TrackRemote>>,
@@ -223,6 +227,8 @@ pub fn on_track(
     }
 }
 
+/// Handles 'connection_state_change' events on RTCPeerConnection.
+/// 
 pub fn on_peer_connection_state_change(
     state: RTCPeerConnectionState,
     peer_id: &Uuid,
@@ -243,6 +249,8 @@ pub fn on_peer_connection_state_change(
     }
 }
 
+/// Handles 'negotiation_needed' events on RTCPeerConnection.
+/// 
 pub fn on_negotiation_needed(
     peer_id: &Uuid,
     peer_connection: Arc<RTCPeerConnection>,
@@ -262,6 +270,8 @@ pub fn on_negotiation_needed(
     });
 }
 
+/// Handles 'ice_candidate' events on RTCPeerConnection.
+/// 
 pub fn on_ice_candidate(
     peer_id: &Uuid,
     candidate: RTCIceCandidate,
@@ -303,6 +313,8 @@ pub fn on_ice_candidate(
     });
 }
 
+/// Handles 'IceCandidate' messages sent from remote peers.
+/// 
 pub async fn handle_ice_candidate_message(
     peer_id: &Uuid,
     msg: &SubscriberMessage,
@@ -324,6 +336,8 @@ pub async fn handle_ice_candidate_message(
     Ok(())
 }
 
+/// Handles 'Answer' messages sent from remote peers.
+/// 
 pub async fn handle_answer_message(
     peer_id: &Uuid,
     msg: &SubscriberMessage,
@@ -337,6 +351,8 @@ pub async fn handle_answer_message(
     Ok(())
 }
 
+/// Handles 'Start' messages. 
+/// 
 pub async fn handle_start_message(
     peer_id: &Uuid,
     pc: Arc<RTCPeerConnection>,
@@ -435,6 +451,8 @@ pub async fn handle_start_message(
     Ok(())
 }
 
+/// Creates offer.
+/// 
 pub async fn do_offer(
     peer_connection: Arc<RTCPeerConnection>,
     tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
