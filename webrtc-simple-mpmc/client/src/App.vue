@@ -8,14 +8,19 @@
 		<video :src-object.prop.camel="srcObject" autoplay controls></video>
 		<div>
 			message: <input type="text" v-model="message" class="message-input"/>
-			<button type="button" @click="sendMessage" :disable="!message">send!</button>
+			<button type="button" @click="sendMessage" :disabled="!message">send!</button>
 		</div>
 	</div>
 	<div v-if="isStarted">
 		<h2 class="subscriber">Watching ({{ videos.length }})</h2>
 		<template v-for="video in videos" :key="video.id">
 			<h3>{{ video.id }}</h3>
-			<video :src-object.prop.camel="video.srcObject" autoplay controls></video>
+			<video :src-object.prop.camel="video.srcObject" autoplay></video>
+			<div>
+				<button type="button" @click="toggleMute(video.id)">
+					{{ video.muteButtonName }}
+				</button>
+			</div>
 			<div v-if="!!video.message">
 				Message from the peer: {{ video.message }}
 			</div>
@@ -41,7 +46,13 @@ interface DataType {
 interface VideoWindow {
 	id: string,
 	srcObject: MediaStream | null,
-	message: string
+	message: string,
+	muteButtonName: 'mute' | 'unmute'
+}
+
+interface VideoHandle {
+	videoWindow: VideoWindow,
+	audio: HTMLAudioElement
 }
 
 enum SubscriberMessageType {
@@ -67,7 +78,7 @@ class ConnectionHandler {
 	private socket: WebSocket | undefined;
 	private pc: RTCPeerConnection | undefined;
 	private dc: RTCDataChannel | undefined;
-	private videoHandles: Map<string, VideoWindow>;
+	private videoHandles: Map<string, VideoHandle>;
 
 	constructor() {
 		this.videoHandles = new Map();
@@ -101,7 +112,7 @@ class ConnectionHandler {
 				const videoId = 'sfu-stream-' + msg.from;
 				const vh = this.videoHandles.get(videoId);
 				if (vh) {
-					vh.message = msg.message;
+					vh.videoWindow.message = msg.message;
 				}
 			};
 
@@ -167,24 +178,45 @@ class ConnectionHandler {
 		this.dc.send(data);
 	}
 
+	getVideoHandle(videoId: string): VideoHandle | undefined {
+		return this.videoHandles.get(videoId);
+	}
+
 	private async initRTCPeerConnection(data: DataType): Promise<RTCPeerConnection> {
 
 		const pc = await this.newRTCPeerConnection();
 
 		pc.ontrack = (event: RTCTrackEvent) => {
-			const videoId = event.streams[0].id;
+			const mediaStream = event.streams[0];
+			const videoId = mediaStream.id;
 
 			console.debug('on_track', event.track);
 
 			if (videoId.startsWith('sfu-stream-') && event.track.kind === 'video') {
 
-				const videoWindow = reactive({
-					id: videoId,
-					srcObject: event.streams[0],
-					message: ''
-				} as VideoWindow);
+				// https://stackoverflow.com/questions/34990672/control-volume-gain-for-video-audio-stream-in-firefox
+				const audioTrack = mediaStream.getAudioTracks()[0];
+				const audio = new Audio();
+				audio.srcObject = new MediaStream([ audioTrack ]);
+				audio.onloadedmetadata = () => {
+					audio.play();
+				};
 
-				this.videoHandles.set(videoId, videoWindow);
+				const videoStream  = new MediaStream([ mediaStream.getVideoTracks()[0] ]);
+
+				const videoWindow: VideoWindow = reactive({
+					id: videoId,
+					srcObject: videoStream,
+					message: '',
+					muteButtonName: 'mute'
+				});
+
+				const videoHandle: VideoHandle = {
+					videoWindow,
+					audio
+				};
+
+				this.videoHandles.set(videoId, videoHandle);
 
 				data.videos.push(videoWindow);
 
@@ -284,6 +316,15 @@ const App = defineComponent({
 		},
 		sendMessage(): void {
 			this.connectionHandler.sendData(this.message);
+		},
+		toggleMute(videoId: string): void {
+			const vh = this.connectionHandler.getVideoHandle(videoId);
+			if (vh) {
+				const muted = vh.audio.muted;
+				const btn = muted ? 'mute' : 'unmute';
+				vh.videoWindow.muteButtonName = btn;
+				vh.audio.muted = !muted;
+			}
 		}
 	},
 	mounted() {
