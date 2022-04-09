@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use warp::ws::Message;
 
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use uuid::Uuid;
 
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
@@ -14,6 +17,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 // use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
@@ -44,6 +48,11 @@ pub enum SubscriberMessageType {
     Offer,
     Answer,
     IceCandidate,
+}
+#[derive(Serialize, Debug)]
+pub struct ToSubscriberDataChannelMessage {
+    pub from: Uuid,
+    pub message: String,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -85,13 +94,15 @@ impl ClientIceCandidate {
 
 type ToPublisherChannel = tokio::sync::mpsc::UnboundedSender<MessageToPublisher>;
 type ToSubscriberChannel = tokio::sync::mpsc::UnboundedSender<SubscriberMessage>;
+type ToSubscriberDataChannel = tokio::sync::mpsc::UnboundedSender<ToSubscriberDataChannelMessage>;
 
 /// A PeerManager manages the media tracks and channels for communication.
-/// 
+///
 pub struct PeerManager {
     tracks: HashMap<Uuid, Vec<Arc<TrackLocalStaticRTP>>>,
     to_publishers: HashMap<Uuid, ToPublisherChannel>,
     to_subscribers: HashMap<Uuid, ToSubscriberChannel>,
+    data_to_subscribers: HashMap<Uuid, ToSubscriberDataChannel>,
 }
 
 impl PeerManager {
@@ -100,6 +111,7 @@ impl PeerManager {
             tracks: HashMap::new(),
             to_publishers: HashMap::new(),
             to_subscribers: HashMap::new(),
+            data_to_subscribers: HashMap::new(),
         }
     }
 
@@ -108,9 +120,12 @@ impl PeerManager {
         peer_id: &Uuid,
         to_pub_ch: ToPublisherChannel,
         to_sub_ch: ToSubscriberChannel,
+        to_sub_data_ch: ToSubscriberDataChannel,
     ) {
         self.to_publishers.insert(peer_id.clone(), to_pub_ch);
         self.to_subscribers.insert(peer_id.clone(), to_sub_ch);
+        self.data_to_subscribers
+            .insert(peer_id.clone(), to_sub_data_ch);
     }
     pub fn add_track(&mut self, peer_id: &Uuid, track: Arc<TrackLocalStaticRTP>) {
         let tracks = self.tracks.entry(peer_id.clone()).or_insert(Vec::new());
@@ -137,6 +152,19 @@ impl PeerManager {
             if let Err(e) = tx_ch.send(SubscriberMessage {
                 msg_type: message.msg_type,
                 message: message.message.clone(),
+            }) {
+                error!("Error while sending a message to {:?} {:?}", sub_id, e);
+            }
+        }
+    }
+
+    pub fn send_data_to_subscribers(&self, peer_id: &Uuid, message: String) {
+        for (sub_id, tx_ch) in self.data_to_subscribers.iter() {
+            info!("Send data to subscriber {:?}", sub_id);
+
+            if let Err(e) = tx_ch.send(ToSubscriberDataChannelMessage {
+                from: peer_id.clone(),
+                message: message.clone(),
             }) {
                 error!("Error while sending a message to {:?} {:?}", sub_id, e);
             }
@@ -174,7 +202,7 @@ impl PeerManager {
 pub type PeerManagerRef = Arc<Mutex<PeerManager>>;
 
 /// Handles 'track' events on RTCPeerConnection.
-/// 
+///
 pub fn on_track(
     peer_id: &Uuid,
     track: Option<Arc<TrackRemote>>,
@@ -228,7 +256,7 @@ pub fn on_track(
 }
 
 /// Handles 'connection_state_change' events on RTCPeerConnection.
-/// 
+///
 pub fn on_peer_connection_state_change(
     state: RTCPeerConnectionState,
     peer_id: &Uuid,
@@ -250,11 +278,11 @@ pub fn on_peer_connection_state_change(
 }
 
 /// Handles 'negotiation_needed' events on RTCPeerConnection.
-/// 
+///
 pub fn on_negotiation_needed(
     peer_id: &Uuid,
     peer_connection: Arc<RTCPeerConnection>,
-    tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
+    tx_ws: UnboundedSender<warp::ws::Message>,
 ) {
     info!(
         "Negotiation has been needed on {:?} - {:?}.",
@@ -271,11 +299,11 @@ pub fn on_negotiation_needed(
 }
 
 /// Handles 'ice_candidate' events on RTCPeerConnection.
-/// 
+///
 pub fn on_ice_candidate(
     peer_id: &Uuid,
     candidate: RTCIceCandidate,
-    tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
+    tx_ws: UnboundedSender<warp::ws::Message>,
 ) {
     let tx_ws_facade_for_ice_candidate = tx_ws.clone();
     let peer_id = peer_id.clone();
@@ -313,8 +341,32 @@ pub fn on_ice_candidate(
     });
 }
 
-/// Handles 'IceCandidate' messages sent from remote peers.
+/// Handles 'open' events on RTCDataChannel.
 /// 
+pub async fn on_data_channel_open(
+    peer_id: &Uuid,
+    data_ch_to_send: Arc<RTCDataChannel>,
+    mut rx_data: UnboundedReceiverStream<ToSubscriberDataChannelMessage>,
+) {
+    while let Some(msg) = rx_data.next().await {
+        if &msg.from == peer_id {
+            continue;
+        }
+        let msg_str = match serde_json::to_string(&msg) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("{:?} on {:?}.", e, peer_id);
+                continue;
+            }
+        };
+        if let Err(e) = data_ch_to_send.send_text(msg_str).await {
+            error!("{:?} on {:?}.", e, peer_id);
+        }
+    }
+}
+
+/// Handles 'IceCandidate' messages sent from remote peers.
+///
 pub async fn handle_ice_candidate_message(
     peer_id: &Uuid,
     msg: &SubscriberMessage,
@@ -337,7 +389,7 @@ pub async fn handle_ice_candidate_message(
 }
 
 /// Handles 'Answer' messages sent from remote peers.
-/// 
+///
 pub async fn handle_answer_message(
     peer_id: &Uuid,
     msg: &SubscriberMessage,
@@ -351,13 +403,13 @@ pub async fn handle_answer_message(
     Ok(())
 }
 
-/// Handles 'Start' messages. 
-/// 
+/// Handles 'Start' messages.
+///
 pub async fn handle_start_message(
     peer_id: &Uuid,
     pc: Arc<RTCPeerConnection>,
     peer_manager: PeerManagerRef,
-    tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
+    tx_ws: UnboundedSender<warp::ws::Message>,
 ) -> Result<(), ApplicationError> {
     info!("Prepare tracks on {:?}.", peer_id);
     let peer_id = peer_id.clone();
@@ -452,10 +504,10 @@ pub async fn handle_start_message(
 }
 
 /// Creates offer.
-/// 
+///
 pub async fn do_offer(
     peer_connection: Arc<RTCPeerConnection>,
-    tx_ws: tokio::sync::mpsc::UnboundedSender<warp::ws::Message>,
+    tx_ws: UnboundedSender<warp::ws::Message>,
 ) -> Result<(), ApplicationError> {
     let offer = peer_connection.create_offer(None).await?;
 
@@ -478,3 +530,4 @@ pub async fn do_offer(
     }
     Ok(())
 }
+

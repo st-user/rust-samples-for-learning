@@ -6,18 +6,25 @@
 	<div v-if="isStarted">
 		<h2 class="publisher">My Video</h2>
 		<video :src-object.prop.camel="srcObject" autoplay controls></video>
+		<div>
+			message: <input type="text" v-model="message" class="message-input"/>
+			<button type="button" @click="sendMessage" :disable="!message">send!</button>
+		</div>
 	</div>
 	<div v-if="isStarted">
 		<h2 class="subscriber">Watching ({{ videos.length }})</h2>
 		<template v-for="video in videos" :key="video.id">
 			<h3>{{ video.id }}</h3>
 			<video :src-object.prop.camel="video.srcObject" autoplay controls></video>
+			<div v-if="!!video.message">
+				Message from the peer: {{ video.message }}
+			</div>
 		</template>
 	</div>
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue';
+import { defineComponent, reactive } from 'vue';
 
 enum AppState {
 	Init,
@@ -26,13 +33,15 @@ enum AppState {
 
 interface DataType {
 	srcObject: MediaStream | null,
+	message: string,
 	videos: Array<VideoWindow>,
 	state: AppState
 }
 
 interface VideoWindow {
 	id: string,
-	srcObject: MediaStream | null
+	srcObject: MediaStream | null,
+	message: string
 }
 
 enum SubscriberMessageType {
@@ -48,10 +57,21 @@ interface SubscriberMessage {
 	message: string
 }
 
+interface DataMessage {
+	from: string,
+	message: string
+}
+
 class ConnectionHandler {
 
 	private socket: WebSocket | undefined;
 	private pc: RTCPeerConnection | undefined;
+	private dc: RTCDataChannel | undefined;
+	private videoHandles: Map<string, VideoWindow>;
+
+	constructor() {
+		this.videoHandles = new Map();
+	}
 	
 	async init(data: DataType): Promise<void> {
 
@@ -66,6 +86,25 @@ class ConnectionHandler {
 				msg_type: SubscriberMessageType.IceCandidate,
 				message: JSON.stringify(event.candidate)
 			}));
+		});
+		pc.addEventListener('datachannel', (event: RTCDataChannelEvent) => {
+
+			const dataChannel = event.channel;
+			this.dc = dataChannel;
+			const label = dataChannel.label;
+
+			dataChannel.onopen = () => console.debug('Data channel opened', label);
+			dataChannel.onclose = () => console.debug('Data channel closed', label);
+
+			dataChannel.onmessage = (event: MessageEvent) => {
+				const msg = JSON.parse(event.data) as DataMessage;
+				const videoId = 'sfu-stream-' + msg.from;
+				const vh = this.videoHandles.get(videoId);
+				if (vh) {
+					vh.message = msg.message;
+				}
+			};
+
 		});
 
 		this.socket.addEventListener('open', () => {
@@ -121,6 +160,13 @@ class ConnectionHandler {
 		});
 	}
 
+	sendData(data: string): void {
+		if (!this.dc) {
+			return;
+		}
+		this.dc.send(data);
+	}
+
 	private async initRTCPeerConnection(data: DataType): Promise<RTCPeerConnection> {
 
 		const pc = await this.newRTCPeerConnection();
@@ -132,10 +178,15 @@ class ConnectionHandler {
 
 			if (videoId.startsWith('sfu-stream-') && event.track.kind === 'video') {
 
-				data.videos.push({
+				const videoWindow = reactive({
 					id: videoId,
-					srcObject: event.streams[0]
+					srcObject: event.streams[0],
+					message: ''
 				} as VideoWindow);
+
+				this.videoHandles.set(videoId, videoWindow);
+
+				data.videos.push(videoWindow);
 
 				event.track.onmute = () => {
 					console.debug(`mute ${videoId}`);
@@ -164,6 +215,7 @@ class ConnectionHandler {
 
 		return pc;
 	}
+
 
 	// 
 	// Vanilla ICE
@@ -210,9 +262,17 @@ class ConnectionHandler {
 }
 
 const App = defineComponent({
+	setup() {
+		// https://logaretm.com/blog/vue-composition-api-non-reactive-objects/
+		const connectionHandler = new ConnectionHandler();
+		return {
+			connectionHandler
+		};
+	},
 	data(): DataType {
 		return {
 			srcObject: null,
+			message: '',
 			videos: [],
 			state: AppState.Init
 		};
@@ -220,8 +280,10 @@ const App = defineComponent({
 	methods: {
 		start(): void {
 			this.state = AppState.Started;
-			const handler = new ConnectionHandler();
-			handler.init(this);
+			this.connectionHandler.init(this);
+		},
+		sendMessage(): void {
+			this.connectionHandler.sendData(this.message);
 		}
 	},
 	mounted() {
@@ -249,5 +311,8 @@ export default App;
 }
 .subscriber {
 	color: rgb(90, 6, 17);
+}
+.message-input {
+	width: 360px;
 }
 </style>

@@ -20,6 +20,7 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
 // use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 
@@ -36,7 +37,7 @@ mod logger;
 use crate::errors::ApplicationError;
 use crate::handler::{
     MessageToPublisher, PeerManager, PeerManagerRef, RTCPToPublisher, SubscriberMessage,
-    SubscriberMessageType,
+    SubscriberMessageType, ToSubscriberDataChannelMessage,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -76,16 +77,16 @@ fn with_peer_manager(
 }
 
 /// The endpoint serving the dictionaries of ice servers.
-/// 
+///
 /// The response JSON can be parsed to an array of 'RTCIceServer'.
-/// 
+///
 async fn ice_servers() -> Result<impl Reply, Rejection> {
     let ice_servers = ice::create_ice_server_config_for_browser("client");
     Ok(ok_with_json(&ice_servers))
 }
 
 /// Handles the upgrade request for Websocket and initializes RTCPeerConnection.
-/// 
+///
 async fn handle_peer(ws: warp::ws::WebSocket, peer_manager: PeerManagerRef) {
     if let Err(e) = handle_peer_delegate(ws, peer_manager).await {
         error!("Error on handle_subscribe {:?}.", e);
@@ -111,12 +112,16 @@ async fn handle_peer_delegate(
     let mut rx_main_to_publisher: UnboundedReceiverStream<MessageToPublisher> =
         UnboundedReceiverStream::new(rx_main_to_publisher);
 
+    let (tx_data_to_subscriber, rx_data_to_subscriber) = unbounded_channel();
+    let rx_data_to_subscriber: UnboundedReceiverStream<ToSubscriberDataChannelMessage> =
+        UnboundedReceiverStream::new(rx_data_to_subscriber);
     {
         let mut peer_manager = peer_manager.lock().unwrap();
         peer_manager.add_peer(
             &peer_id,
             tx_main_to_publisher,
             tx_main_to_subscriber.clone(),
+            tx_data_to_subscriber.clone(),
         );
     }
 
@@ -149,6 +154,44 @@ async fn handle_peer_delegate(
     let local_track_chan_tx = Arc::new(local_track_chan_tx);
     let track_ssrc_tx = Arc::new(track_ssrc_tx);
 
+    //
+    // Create a data channel
+    //
+    let data_channel = peer_connection
+        .create_data_channel(&format!("sfu-data-ch-{}", peer_id), None)
+        .await?;
+    // Register channel opening handling
+    let data_ch_for_open = Arc::clone(&data_channel);
+    data_channel
+        .on_open(Box::new(move || {
+            info!("Data channel opens on {:?}.", peer_id);
+
+            let data_ch_to_send = Arc::clone(&data_ch_for_open);
+
+            Box::pin(async move {
+                handler::on_data_channel_open(&peer_id, data_ch_to_send, rx_data_to_subscriber)
+                    .await;
+            })
+        }))
+        .await;
+
+    // Register text message handling
+    let peer_manager_for_data_ch = peer_manager.clone();
+    data_channel
+        .on_message(Box::new(move |msg: DataChannelMessage| {
+            let msg_str = match String::from_utf8(msg.data.to_vec()) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    error!("{:?} on {:?}.", e, peer_id);
+                    return Box::pin(async {});
+                }
+            };
+            let peer_manager = peer_manager_for_data_ch.lock().unwrap();
+            peer_manager.send_data_to_subscribers(&peer_id, msg_str);
+
+            Box::pin(async {})
+        }))
+        .await;
     //
     // In order to publish a video and an audio, this pc should handle tracks from the client.
     //
